@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Compartilhar Tela • Suporte X</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="card">
+    <h1>Cliente: Compartilhar Tela</h1>
+    <p class="muted">1) Toque em <b>Gerar código</b>. 2) Envie o link para o técnico. 3) Toque em <b>Iniciar compartilhamento</b> e confirme <b>Iniciar agora</b>.</p>
+    <div class="row">
+      <input id="room" type="text" placeholder="Código da sessão (6 dígitos)" />
+      <button id="gen">Gerar código</button>
+    </div>
+    <p class="muted">Código: <span id="rc" class="roomcode">—</span></p>
+    <p class="muted">Link do visualizador: <span id="viewlink" class="link">—</span></p>
+    <div class="row" style="margin-top:10px;">
+      <button id="start" disabled>Iniciar compartilhamento</button>
+      <button id="stop" disabled>Parar</button>
+    </div>
+    <p class="muted" id="status">Aguardando…</p>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="/common.js"></script>
+    <script>
+      const roomInput = qs('#room');
+      const rc = qs('#rc');
+      const viewlink = qs('#viewlink');
+      const startBtn = qs('#start');
+      const stopBtn = qs('#stop');
+      const statusEl = qs('#status');
+
+      const roomFromURL = getRoomFromQuery();
+      if (roomFromURL) {
+        roomInput.value = roomFromURL;
+        rc.textContent = roomFromURL;
+        viewlink.textContent = location.origin + "/view.html?room=" + roomFromURL;
+        viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
+        startBtn.disabled = false;
+      }
+
+      qs('#gen').onclick = () => {
+        const r = randomRoom();
+        roomInput.value = r;
+        rc.textContent = r;
+        viewlink.textContent = location.origin + "/view.html?room=" + r;
+        viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
+        startBtn.disabled = false;
+      };
+
+      let pc, socket, stream;
+
+      function iceServers(){
+        const s = [{ urls: 'stun:stun.l.google.com:19302' }];
+        // Opcional: adicione TURN aqui depois (urls, username, credential)
+        return s;
+      }
+
+      async function start() {
+        const room = roomInput.value.trim();
+        if (!room) { alert('Informe o código da sessão'); return; }
+        startBtn.disabled = true;
+
+        socket = io();
+        socket.emit('join', room);
+        socket.on('peer-left', () => setStatus('Visualizador saiu.'));
+        socket.on('signal', async (data) => {
+          if (data.type === 'answer') {
+            await pc.setRemoteDescription(data);
+            setStatus('Conectado!');
+          } else if (data.candidate) {
+            try { await pc.addIceCandidate(data); } catch (e){ console.error(e); }
+          }
+        });
+
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        setStatus('Compartilhando tela… aguarde o técnico entrar no link.');
+
+        pc = new RTCPeerConnection({ iceServers: iceServers() });
+        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+        pc.onicecandidate = e => {
+          if (e.candidate) socket.emit('signal', { room, data: e.candidate });
+        };
+
+        // Quando alguém entrar na sala, criamos a oferta
+        socket.on('peer-joined', async () => {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('signal', { room, data: offer });
+          setStatus('Enviando oferta ao visualizador…');
+        });
+
+        stopBtn.disabled = false;
+      }
+
+      function stopShare(){
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        if (pc) pc.close();
+        if (socket) socket.disconnect();
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        setStatus('Parado.');
+      }
+
+      function setStatus(msg){ statusEl.textContent = msg; }
+
+      startBtn.onclick = start;
+      stopBtn.onclick = stopShare;
+    </script>
+  </div>
+</body>
+</html>

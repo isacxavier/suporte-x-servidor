@@ -99,10 +99,6 @@ socket.on('peer-joined', () => {
   if (lastOffer) socket.emit('signal', { room, data: lastOffer });
 });
 
-socket.on('peer-joined', () => {
-  setStatus('Visualizador entrou. Aguardando resposta (answer)…');
-});
-
         stopBtn.disabled = false;
       }
 

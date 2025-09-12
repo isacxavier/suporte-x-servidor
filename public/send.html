@@ -84,13 +84,15 @@
           if (e.candidate) socket.emit('signal', { room, data: e.candidate });
         };
 
-        // Quando alguém entrar na sala, criamos a oferta
-        socket.on('peer-joined', async () => {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('signal', { room, data: offer });
-          setStatus('Enviando oferta ao visualizador…');
-        });
+        // Criar a oferta logo após iniciar o compartilhamento
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+socket.emit('signal', { room, data: offer });
+setStatus('Enviando oferta (offer) ao visualizador…');
+
+socket.on('peer-joined', () => {
+  setStatus('Visualizador entrou. Aguardando resposta (answer)…');
+});
 
         stopBtn.disabled = false;
       }

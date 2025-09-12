@@ -85,10 +85,19 @@
         };
 
         // Criar a oferta logo após iniciar o compartilhamento
+let lastOffer = null;
+
 const offer = await pc.createOffer();
 await pc.setLocalDescription(offer);
 socket.emit('signal', { room, data: offer });
+lastOffer = offer;
 setStatus('Enviando oferta (offer) ao visualizador…');
+
+// se alguém entrar depois, reenvia a offer
+socket.on('peer-joined', () => {
+  setStatus('Visualizador entrou. Aguardando resposta (answer)…');
+  if (lastOffer) socket.emit('signal', { room, data: lastOffer });
+});
 
 socket.on('peer-joined', () => {
   setStatus('Visualizador entrou. Aguardando resposta (answer)…');

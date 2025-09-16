@@ -117,5 +117,12 @@ socket.on('peer-joined', () => {
       stopBtn.onclick = stopShare;
     </script>
   </div>
+  <script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/service-worker.js')
+    .then(() => console.log('Service Worker registrado!'))
+    .catch(err => console.error('Erro ao registrar SW:', err));
+}
+</script>
 </body>
 </html>

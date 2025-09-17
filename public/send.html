@@ -79,8 +79,23 @@
           }
         });
 
-        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-        setStatus('Compartilhando tela… aguarde o técnico entrar no link.');
+        try {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    setStatus('Seu navegador não permite captura de tela (getDisplayMedia indisponível).');
+    alert('Este navegador/ambiente não permite captura de tela. No Android, o Chrome móvel costuma bloquear.\nSolução definitiva: use o app nativo Suporte X.');
+    startBtn.disabled = false;
+    return;
+  }
+
+  stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  setStatus('Compartilhando tela… aguarde o técnico entrar no link.');
+} catch (err) {
+  console.error('getDisplayMedia error:', err);
+  setStatus(`Falha ao iniciar compartilhamento: ${err.name} — ${err.message}`);
+  alert(`Não foi possível iniciar a captura de tela.\n${err.name}: ${err.message}\n\nEm Android, o Chrome móvel frequentemente bloqueia. Solução definitiva: app nativo Suporte X.`);
+  startBtn.disabled = false;
+  return;
+}
 
         pc = new RTCPeerConnection({ iceServers: iceServers() });
         stream.getTracks().forEach(t => pc.addTrack(t, stream));

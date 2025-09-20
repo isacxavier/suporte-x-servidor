@@ -5,44 +5,76 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Ver Tela • Suporte X</title>
   <link rel="stylesheet" href="/style.css" />
+  <style>
+    .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap }
+    .row button { padding:.5rem .8rem }
+    video { width:100%; max-height:70vh; background:#000; }
+    .muted { color:#888 }
+  </style>
 </head>
 <body>
   <div class="card">
     <h1>Técnico: Ver Tela</h1>
+
     <div class="row">
       <input id="room" type="text" placeholder="Código da sessão (6 dígitos)" />
       <button id="join">Entrar</button>
     </div>
+
+    <div class="row" style="margin-top:.5rem">
+      <button id="qLow">Qualidade: Baixa</button>
+      <button id="qMid">Qualidade: Média</button>
+      <button id="qHigh">Qualidade: Alta</button>
+      <button id="ice">Reiniciar ICE</button>
+      <button id="stats">Stats</button>
+      <button id="stop">Parar remoto</button>
+    </div>
+
     <p class="muted">Dica: se recebeu um link com <code>?room=123456</code>, o código já será preenchido automaticamente.</p>
     <video id="video" autoplay playsinline></video>
     <p class="muted" id="status">Aguardando…</p>
+
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="/common.js"></script>
     <script>
+      const qs = (s) => document.querySelector(s);
+      function getRoomFromQuery() {
+        const u = new URL(location.href);
+        return u.searchParams.get('room') || '';
+      }
+
       const roomInput = qs('#room');
       const joinBtn = qs('#join');
       const statusEl = qs('#status');
       const video = qs('#video');
 
+      const qLow = qs('#qLow');
+      const qMid = qs('#qMid');
+      const qHigh = qs('#qHigh');
+      const iceBtn = qs('#ice');
+      const statsBtn = qs('#stats');
+      const stopBtn = qs('#stop');
+
       const roomFromURL = getRoomFromQuery();
-      if (roomFromURL) {
-        roomInput.value = roomFromURL;
-      }
+      if (roomFromURL) roomInput.value = roomFromURL;
 
-      let pc, socket;
-
-      function iceServers(){
-        const s = [{ urls: 'stun:stun.l.google.com:19302' }];
-        // Opcional: adicione TURN aqui depois (urls, username, credential)
-        return s;
-      }
+      let pc, socket, dc;
 
       function setStatus(msg){ statusEl.textContent = msg; }
+      function iceServers(){
+        return [{ urls: 'stun:stun.l.google.com:19302' }];
+      }
+
+      function sendDc(obj){
+        if (dc && dc.readyState === 'open') {
+          dc.send(JSON.stringify(obj));
+        }
+      }
 
       joinBtn.onclick = async () => {
         const room = roomInput.value.trim();
         if (!room) { alert('Informe o código da sessão'); return; }
-        joinBtn.disabled = true;
+        joinBtn.disabled = true; setStatus('Conectando…');
 
         socket = io();
         socket.emit('join', room);
@@ -50,6 +82,24 @@
         pc = new RTCPeerConnection({ iceServers: iceServers() });
         pc.ontrack = (e) => { video.srcObject = e.streams[0]; setStatus('Recebendo vídeo…'); };
         pc.onicecandidate = e => { if (e.candidate) socket.emit('signal', { room, data: e.candidate }); };
+
+        pc.ondatachannel = (evt) => {
+          dc = evt.channel;
+          dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
+          dc.onclose = () => setStatus('Canal de dados fechado');
+          dc.onmessage = (ev) => {
+            let obj = {};
+            try { obj = JSON.parse(ev.data); } catch {}
+            if (obj.t === 'ping') {
+              sendDc({ t: 'pong' });
+            } else if (obj.t === 'status') {
+              setStatus(`Status: ${obj.status}${obj.reason ? ' ('+obj.reason+')' : ''}`);
+            } else if (obj.t === 'stats') {
+              const { bytesSent, framesEncoded, fps, rttMs } = obj;
+              setStatus(`Stats – bytesSent: ${bytesSent}, frames: ${framesEncoded}, fps: ${fps ?? '-'}, rtt: ${rttMs ? rttMs.toFixed(0)+'ms' : '-'}`);
+            }
+          };
+        };
 
         socket.on('signal', async (data) => {
           if (data.type === 'offer') {
@@ -65,14 +115,23 @@
 
         socket.on('peer-left', () => setStatus('Cliente encerrou o compartilhamento.'));
       };
+
+      // Controles
+      qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
+      qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
+      qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
+      iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
+      statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
+      stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
     </script>
   </div>
+
   <script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/service-worker.js')
-    .then(() => console.log('Service Worker registrado!'))
-    .catch(err => console.error('Erro ao registrar SW:', err));
-}
-</script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/service-worker.js')
+        .then(() => console.log('Service Worker registrado!'))
+        .catch(err => console.error('Erro ao registrar SW:', err));
+    }
+  </script>
 </body>
 </html>

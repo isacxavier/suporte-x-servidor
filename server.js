@@ -5,7 +5,10 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: { origin: '*' },
+  allowEIO3: true, // garante compat com socket.io-client 2.x (Android)
+});
 
 const PORT = process.env.PORT || 3000;
 

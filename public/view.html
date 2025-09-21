@@ -31,7 +31,8 @@
     </div>
 
     <p class="muted">Dica: se recebeu um link com <code>?room=123456</code>, o código já será preenchido automaticamente.</p>
-    <video id="video" autoplay playsinline></video>
+    <!-- muted ajuda o autoplay em todos os navegadores -->
+    <video id="video" autoplay playsinline muted></video>
     <p class="muted" id="status">Aguardando…</p>
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -53,6 +54,11 @@
       const iceBtn = qs('#ice');
       const statsBtn = qs('#stats');
       const stopBtn = qs('#stop');
+
+      // reforço de autoplay
+      video.muted = true;
+      video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
+      video.addEventListener('canplay',        () => video.play().catch(()=>{}));
 
       const roomFromURL = getRoomFromQuery();
       if (roomFromURL) roomInput.value = roomFromURL;
@@ -77,10 +83,14 @@
 
         pc = new RTCPeerConnection({ iceServers: iceServers() });
 
+        // Garante que o lado web declare interesse em RECEBER vídeo (Unified Plan)
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
         pc.ontrack = (e) => {
-          const stream = e.streams?.[0] || new MediaStream([e.track]);
-          video.srcObject = stream;
+          const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+          if (video.srcObject !== stream) video.srcObject = stream;
           setStatus('Recebendo vídeo…');
+          video.play().catch(()=>{});
         };
 
         pc.onicecandidate = (e) => {
@@ -88,6 +98,9 @@
             socket.emit('signal', { room, type: 'ice', candidate: e.candidate });
           }
         };
+
+        pc.onconnectionstatechange = () => console.log('PC state:', pc.connectionState);
+        pc.oniceconnectionstatechange = () => console.log('ICE state:', pc.iceConnectionState);
 
         pc.ondatachannel = (evt) => {
           dc = evt.channel;

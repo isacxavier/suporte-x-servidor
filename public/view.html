@@ -107,7 +107,7 @@
           };
         };
 
-        // Recebe do Android (offer/ice) direto, sem "data"
+        // Recebe do Android (offer/ice), já "desembrulhado" pelo servidor
         socket.on('signal', async (msg) => {
           if (!msg) return;
 
@@ -118,7 +118,11 @@
             socket.emit('signal', { room, type: 'answer', sdp: answer.sdp });
             setStatus('Conectado!');
           } else if (msg.type === 'ice' && msg.candidate) {
+            // embrulhado: {type:'ice', candidate:{...}}
             try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
+          } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
+            // "cru": {candidate:'...', sdpMid:'0', sdpMLineIndex:0}
+            try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
           }
         });
 

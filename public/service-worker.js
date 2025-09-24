@@ -1,21 +1,20 @@
-self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open('suportex-cache').then(cache => {
-      return cache.addAll([
-        '/',
-        '/index.html',
-        '/send.html',
-        '/view.html',
-        '/style.css'
-      ]);
-    })
-  );
+// SW minimalista: não cacheia HTML/JS; busca sempre da rede.
+// (Se você já tinha SW, este substitui o comportamento.)
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
 });
 
-self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request).then(response => {
-      return response || fetch(event.request);
-    })
-  );
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  const dest = req.destination; // 'document' | 'script' | 'style' | 'image' | ...
+  if (dest === 'document' || dest === 'script') {
+    event.respondWith(fetch(req, { cache: 'no-store' }));
+    return;
+  }
+  // default: passa reto (deixa o navegador decidir)
+  event.respondWith(fetch(req));
 });

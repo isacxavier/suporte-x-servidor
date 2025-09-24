@@ -4,6 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Ver Tela • Suporte X</title>
+
+  <!-- Anti-cache extra no HTML -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+
   <link rel="stylesheet" href="/style.css" />
   <style>
     .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap }
@@ -44,16 +50,16 @@
       }
 
       const roomInput = qs('#room');
-      const joinBtn = qs('#join');
-      const statusEl = qs('#status');
-      const video = qs('#video');
+      const joinBtn   = qs('#join');
+      const statusEl  = qs('#status');
+      const video     = qs('#video');
 
-      const qLow = qs('#qLow');
-      const qMid = qs('#qMid');
-      const qHigh = qs('#qHigh');
+      const qLow   = qs('#qLow');
+      const qMid   = qs('#qMid');
+      const qHigh  = qs('#qHigh');
       const iceBtn = qs('#ice');
       const statsBtn = qs('#stats');
-      const stopBtn = qs('#stop');
+      const stopBtn  = qs('#stop');
 
       // reforço de autoplay
       video.muted = true;
@@ -63,7 +69,7 @@
       const roomFromURL = getRoomFromQuery();
       if (roomFromURL) roomInput.value = roomFromURL;
 
-      let pc, socket, dc;
+      let pc, socket, dc, videoTransceiver;
 
       function setStatus(msg){ statusEl.textContent = msg; }
       function iceServers(){
@@ -78,13 +84,36 @@
         if (!room) { alert('Informe o código da sessão'); return; }
         joinBtn.disabled = true; setStatus('Conectando…');
 
-        socket = io();              // mesma origem do server
-        socket.emit('join', room);  // join simples (server aceita string)
+        // força WebSocket (menos latência que long-polling)
+        socket = io({ transports: ['websocket'], upgrade: true });
+        socket.emit('join', room);
 
         pc = new RTCPeerConnection({ iceServers: iceServers() });
 
-        // Garante que o lado web declare interesse em RECEBER vídeo (Unified Plan)
-        pc.addTransceiver('video', { direction: 'recvonly' });
+        // Declarar recepção de vídeo (Unified Plan)
+        videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+
+        // Preferir H.264 (normalmente dá menos uso de CPU em Android/iOS/Edge)
+        try {
+          const caps = RTCRtpReceiver.getCapabilities('video');
+          if (caps && caps.codecs) {
+            const h264 = caps.codecs.filter(c =>
+              c.mimeType && c.mimeType.toLowerCase() === 'video/h264' &&
+              (!c.sdpFmtpLine || c.sdpFmtpLine.includes('packetization-mode=1'))
+            );
+            if (h264.length) {
+              const others = caps.codecs.filter(c => c.mimeType.toLowerCase() !== 'video/h264');
+              videoTransceiver.setCodecPreferences([...h264, ...others]);
+            }
+          }
+        } catch (e) { /* ok sem suporte */ }
+
+        // Dica de baixa latência para o receptor (Chrome/Edge suportam)
+        try {
+          if (videoTransceiver?.receiver && 'playoutDelayHint' in videoTransceiver.receiver) {
+            videoTransceiver.receiver.playoutDelayHint = 0.06; // ~60 ms
+          }
+        } catch (e) { /* ignora se não suportado */ }
 
         pc.ontrack = (e) => {
           const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
@@ -99,12 +128,12 @@
           }
         };
 
-        pc.onconnectionstatechange = () => console.log('PC state:', pc.connectionState);
+        pc.onconnectionstatechange    = () => console.log('PC state:', pc.connectionState);
         pc.oniceconnectionstatechange = () => console.log('ICE state:', pc.iceConnectionState);
 
         pc.ondatachannel = (evt) => {
           dc = evt.channel;
-          dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
+          dc.onopen  = () => setStatus('Conectado (canal de dados pronto)');
           dc.onclose = () => setStatus('Canal de dados fechado');
           dc.onmessage = (ev) => {
             let obj = {};
@@ -120,7 +149,7 @@
           };
         };
 
-        // Recebe do Android (offer/ice), já "desembrulhado" pelo servidor
+        // Sinalização
         socket.on('signal', async (msg) => {
           if (!msg) return;
 
@@ -131,10 +160,8 @@
             socket.emit('signal', { room, type: 'answer', sdp: answer.sdp });
             setStatus('Conectado!');
           } else if (msg.type === 'ice' && msg.candidate) {
-            // embrulhado: {type:'ice', candidate:{...}}
             try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
           } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
-            // "cru": {candidate:'...', sdpMid:'0', sdpMLineIndex:0}
             try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
           }
         });
@@ -143,10 +170,10 @@
       };
 
       // Controles
-      qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
-      qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
-      qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
-      iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
+      qLow.onclick   = () => sendDc({ cmd: 'quality', level: 'low'  });
+      qMid.onclick   = () => sendDc({ cmd: 'quality', level: 'mid'  });
+      qHigh.onclick  = () => sendDc({ cmd: 'quality', level: 'high' });
+      iceBtn.onclick = () => sendDc({ cmd: 'ice-restart' });
       statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
       stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
     </script>

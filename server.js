@@ -7,13 +7,27 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
-  allowEIO3: true, // garante compat com socket.io-client 2.x (Android)
+  allowEIO3: true, // compat com socket.io-client 2.x (Android)
 });
 
 const PORT = process.env.PORT || 3000;
 
-// sirva sua pasta "public" (view.html, style.css etc. devem estar lá)
-app.use(express.static(path.join(__dirname, 'public')));
+// —— Anti-cache seletivo (HTML/JS) —— //
+const staticDir = path.join(__dirname, 'public');
+app.use(express.static(staticDir, {
+  // não mexo no cache padrão dos outros tipos (css/imagem),
+  // mas garanto "no-store" para .html e .js
+  setHeaders: (res, filePath) => {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith('.html') || lower.endsWith('.js')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.removeHeader('ETag');
+      res.removeHeader('Last-Modified');
+    }
+  }
+}));
 
 io.on('connection', (socket) => {
   // aceita join como string ("123456") ou objeto ({room:"123456", role:"viewer"})

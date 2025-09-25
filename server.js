@@ -14,12 +14,10 @@ const PORT = process.env.PORT || 3000;
 
 // —— Anti-cache seletivo (HTML/JS) —— //
 const staticDir = path.join(__dirname, 'public');
-app.use(express.static(staticDir, {
-  // não mexo no cache padrão dos outros tipos (css/imagem),
-  // mas garanto "no-store" para .html e .js
+app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
     const lower = filePath.toLowerCase();
-    if (lower.endsWith('.html') || lower.endsWith('.js')) {
+    if (lower.endsWith('.html') || lower.endsWith('.js') || lower.endsWith('.css')) {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');

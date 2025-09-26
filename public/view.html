@@ -1,171 +1,317 @@
+=== path: view.html ===
 <!doctype html>
-<html>
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Ver Tela • Suporte X</title>
+  <title>Central do Técnico • Suporte_X</title>
   <link rel="stylesheet" href="/style.css" />
   <style>
+    :root {
+      --brand:#FFCB19; --brandText:#111; --danger:#E63A3A; --muted:#888;
+      --bg:#F4F6F8; --card:#fff; --line:#E1E3E7; --blue:#0A84FF;
+    }
+    body { background: var(--bg); }
+    .grid { display:grid; grid-template-columns: 360px 1fr; gap:1rem; align-items:start; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem; }
+    .title { display:flex; align-items:center; gap:.5rem; }
+    .dot { width:10px; height:10px; background:#22C55E; border-radius:50%; display:inline-block }
+    .muted { color:var(--muted) }
     .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap }
     .row button { padding:.5rem .8rem }
-    video { width:100%; max-height:70vh; background:#000; }
-    .muted { color:#888 }
+    .btn { padding:.55rem .9rem; border-radius:10px; border:1px solid var(--line); background:#fff; cursor:pointer }
+    .btn.primary { background:var(--brand); color:var(--brandText); border-color:var(--brand); font-weight:600 }
+    .btn.outline-blue { color:var(--blue); border-color:var(--blue); background:#fff }
+    .btn.danger { background:var(--danger); color:#fff; border-color:var(--danger) }
+    .list { display:flex; flex-direction:column; gap:.5rem; }
+    .request { display:flex; justify-content:space-between; gap:.5rem; align-items:center; padding:.6rem .6rem; border:1px solid var(--line); border-radius:10px; background:#fff; }
+    .req-meta { display:flex; flex-direction:column; }
+    .req-actions { display:flex; gap:.4rem; }
+    video { width:100%; max-height:70vh; background:#000; border-radius:10px; }
+    .hidden { display:none !important; }
+    details summary { cursor:pointer }
+    .pill { display:inline-block; padding:.15rem .5rem; border-radius:999px; background:#EEF1F5; font-size:.85rem; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Técnico: Ver Tela</h1>
+  <div class="grid">
+    <!-- LADO ESQUERDO: FILA DE ACIONAMENTOS -->
+    <aside class="card">
+      <div class="title">
+        <h2 style="margin:0">Central do Técnico</h2><span class="dot" title="online"></span>
+      </div>
+      <p class="muted" style="margin:.4rem 0 1rem 0">Solicitações aguardando aceite.</p>
 
-    <div class="row">
-      <input id="room" type="text" placeholder="Código da sessão (6 dígitos)" />
-      <button id="join">Entrar</button>
-    </div>
+      <div class="row" style="justify-content:space-between; margin-bottom:.5rem">
+        <span id="queueCount" class="pill">0 pendente(s)</span>
+        <button id="refresh" class="btn">Atualizar</button>
+      </div>
 
-    <div class="row" style="margin-top:.5rem">
-      <button id="qLow">Qualidade: Baixa</button>
-      <button id="qMid">Qualidade: Média</button>
-      <button id="qHigh">Qualidade: Alta</button>
-      <button id="ice">Reiniciar ICE</button>
-      <button id="stats">Stats</button>
-      <button id="stop">Parar remoto</button>
-    </div>
+      <div id="queue" class="list">
+        <div class="muted">Nenhuma solicitação por enquanto…</div>
+      </div>
 
-    <p class="muted">Dica: se recebeu um link com <code>?room=123456</code>, o código já será preenchido automaticamente.</p>
-    <!-- muted ajuda o autoplay em todos os navegadores -->
-    <video id="video" autoplay playsinline muted></video>
-    <p class="muted" id="status">Aguardando…</p>
+      <hr style="margin:1rem 0;border:none;border-top:1px solid var(--line)">
 
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <script>
-      const qs = (s) => document.querySelector(s);
-      function getRoomFromQuery() {
-        const u = new URL(location.href);
-        return u.searchParams.get('room') || '';
-      }
+      <details>
+        <summary class="muted">Entrar manualmente (debug)</summary>
+        <div class="row" style="margin-top:.5rem">
+          <input id="manualRoom" type="text" placeholder="sessionId (ou room antigo)" />
+          <button id="manualJoin" class="btn">Entrar</button>
+        </div>
+        <p class="muted" style="margin-top:.3rem">Também funciona com <code>?session=XYZ</code> ou <code>?room=123456</code> na URL.</p>
+      </details>
+    </aside>
 
-      const roomInput = qs('#room');
-      const joinBtn = qs('#join');
-      const statusEl = qs('#status');
-      const video = qs('#video');
+    <!-- LADO DIREITO: VÍDEO E CONTROLES -->
+    <main class="card">
+      <h1 style="margin-top:0">Atendimento</h1>
 
-      const qLow = qs('#qLow');
-      const qMid = qs('#qMid');
-      const qHigh = qs('#qHigh');
-      const iceBtn = qs('#ice');
-      const statsBtn = qs('#stats');
-      const stopBtn = qs('#stop');
+      <div class="row" style="margin-bottom:.5rem">
+        <span class="muted">Sessão atual:</span>
+        <code id="sessionLabel" class="pill">—</code>
+      </div>
 
-      // reforço de autoplay
-      video.muted = true;
-      video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
-      video.addEventListener('canplay',        () => video.play().catch(()=>{}));
+      <div class="row" style="margin:.3rem 0 .7rem 0">
+        <button id="qLow"  class="btn">Qualidade: Baixa</button>
+        <button id="qMid"  class="btn">Qualidade: Média</button>
+        <button id="qHigh" class="btn">Qualidade: Alta</button>
+        <button id="ice"   class="btn">Reiniciar ICE</button>
+        <button id="stats" class="btn">Stats</button>
+        <button id="stop"  class="btn danger">Parar remoto</button>
+      </div>
 
-      const roomFromURL = getRoomFromQuery();
-      if (roomFromURL) roomInput.value = roomFromURL;
-
-      let pc, socket, dc, transceiver;
-
-      function setStatus(msg){ statusEl.textContent = msg; }
-      function iceServers(){
-        return [{ urls: 'stun:stun.l.google.com:19302' }];
-      }
-      function sendDc(obj){
-        if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj));
-      }
-
-      function preferVp8(t) {
-        try {
-          const caps = RTCRtpReceiver.getCapabilities('video');
-          if (!caps || !t.setCodecPreferences) return;
-          const pref = [...caps.codecs].sort((a,b) => {
-            const rank = (c) => c.mimeType?.toLowerCase() === 'video/vp8' ? 0
-                            : c.mimeType?.toLowerCase() === 'video/h264' ? 1 : 2;
-            return rank(a) - rank(b);
-          });
-          t.setCodecPreferences(pref);
-        } catch(e) { console.warn('codec pref not applied', e); }
-      }
-
-      joinBtn.onclick = async () => {
-        const room = roomInput.value.trim();
-        if (!room) { alert('Informe o código da sessão'); return; }
-        joinBtn.disabled = true; setStatus('Conectando…');
-
-        socket = io();              // mesma origem do server
-        socket.emit('join', room);  // join simples (server aceita string)
-
-        pc = new RTCPeerConnection({ iceServers: iceServers() });
-
-        // RECEBER vídeo (Unified Plan) e preferir VP8 (casa melhor com Android)
-        transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
-        preferVp8(transceiver);
-
-        pc.ontrack = (e) => {
-          const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
-          if (video.srcObject !== stream) video.srcObject = stream;
-          setStatus('Recebendo vídeo…');
-          video.play().catch(()=>{});
-        };
-
-        pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            socket.emit('signal', { room, type: 'ice', candidate: e.candidate });
-          }
-        };
-
-        pc.onconnectionstatechange = () => console.log('PC state:', pc.connectionState);
-        pc.oniceconnectionstatechange = () => console.log('ICE state:', pc.iceConnectionState);
-
-        pc.ondatachannel = (evt) => {
-          dc = evt.channel;
-          dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
-          dc.onclose = () => setStatus('Canal de dados fechado');
-          dc.onmessage = (ev) => {
-            let obj = {};
-            try { obj = JSON.parse(ev.data); } catch {}
-            if (obj.t === 'ping') {
-              sendDc({ t: 'pong' });
-            } else if (obj.t === 'status') {
-              setStatus(`Status: ${obj.status}${obj.reason ? ' ('+obj.reason+')' : ''}`);
-            } else if (obj.t === 'stats') {
-              const { bytesSent, framesEncoded, fps, rttMs, qualityLimitation, encoderImpl } = obj;
-              setStatus(`Stats – sent: ${bytesSent}, frames: ${framesEncoded}, fps: ${fps ?? '-'}, rtt: ${rttMs ? rttMs.toFixed(0)+'ms' : '-'}, qlim: ${qualityLimitation ?? '-'}, enc: ${encoderImpl ?? '-'}`);
-            }
-          };
-        };
-
-        // Recebe do Android (offer/ice), já "desembrulhado" pelo servidor
-        socket.on('signal', async (msg) => {
-          if (!msg) return;
-
-          if (msg.type === 'offer' && msg.sdp) {
-            await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('signal', { room, type: 'answer', sdp: answer.sdp });
-            setStatus('Conectado!');
-          } else if (msg.type === 'ice' && msg.candidate) {
-            try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
-          } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
-            try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
-          }
-        });
-
-        socket.on('peer-left', () => setStatus('Cliente encerrou o compartilhamento.'));
-      };
-
-      // Controles
-      qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
-      qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
-      qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
-      iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
-      statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
-      stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
-    </script>
+      <video id="video" autoplay playsinline muted></video>
+      <p class="muted" id="status">Aguardando…</p>
+    </main>
   </div>
 
-  <!-- Removido o Service Worker para evitar cache antigo -->
-  <!-- Se quiser manter SW depois, fazemos um SW "nocache" dedicado. -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script>
+    // ================== UTIL ==================
+    const qs = (s) => document.querySelector(s);
+    const qsa = (s) => Array.from(document.querySelectorAll(s));
+    const API = ''; // mesma origem do server (ex.: /api/requests)
 
+    function getParam(name) {
+      const u = new URL(location.href);
+      return u.searchParams.get(name) || '';
+    }
+    function fmtAgo(ts) {
+      try {
+        const d = new Date(ts);
+        const diff = (Date.now() - d.getTime())/1000;
+        if (diff < 60) return `${Math.floor(diff)}s`;
+        if (diff < 3600) return `${Math.floor(diff/60)}m`;
+        return `${Math.floor(diff/3600)}h`;
+      } catch { return ''; }
+    }
+
+    // ================== ELEMENTOS ==================
+    const queueEl = qs('#queue');
+    const queueCount = qs('#queueCount');
+    const refreshBtn = qs('#refresh');
+    const manualRoom = qs('#manualRoom');
+    const manualJoin = qs('#manualJoin');
+
+    const video = qs('#video');
+    const statusEl = qs('#status');
+    const sessionLabel = qs('#sessionLabel');
+
+    const qLow = qs('#qLow'), qMid = qs('#qMid'), qHigh = qs('#qHigh');
+    const iceBtn = qs('#ice'), statsBtn = qs('#stats'), stopBtn = qs('#stop');
+
+    // Reforço autoplay
+    video.muted = true;
+    video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
+    video.addEventListener('canplay',        () => video.play().catch(()=>{}));
+
+    // ================== ESTADO RTC/SOCKET ==================
+    let pc, socket, dc, transceiver;
+    let currentSessionId = null;
+
+    function setStatus(msg){ statusEl.textContent = msg; }
+    function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
+    function iceServers(){ return [{ urls: 'stun:stun.l.google.com:19302' }]; }
+    function sendDc(obj){ if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj)); }
+
+    function preferVp8(t) {
+      try {
+        const caps = RTCRtpReceiver.getCapabilities('video');
+        if (!caps || !t.setCodecPreferences) return;
+        const pref = [...caps.codecs].sort((a,b) => {
+          const rank = (c) => c.mimeType?.toLowerCase() === 'video/vp8' ? 0
+                           : c.mimeType?.toLowerCase() === 'video/h264' ? 1 : 2;
+          return rank(a) - rank(b);
+        });
+        t.setCodecPreferences(pref);
+      } catch(e) { console.warn('codec pref not applied', e); }
+    }
+
+    // ================== FILA (HTTP polling) ==================
+    async function fetchQueue() {
+      try {
+        const r = await fetch(`${API}/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        const list = await r.json(); // espera [{requestId, deviceId, brand, model, createdAt}]
+        renderQueue(list);
+      } catch(e) {
+        // silencioso; evita travar se o endpoint ainda não existe
+      }
+    }
+
+    function renderQueue(items) {
+      queueEl.innerHTML = '';
+      if (!items || !items.length) {
+        queueEl.innerHTML = `<div class="muted">Nenhuma solicitação por enquanto…</div>`;
+        queueCount.textContent = `0 pendente(s)`;
+        return;
+      }
+      queueCount.textContent = `${items.length} pendente(s)`;
+      for (const it of items) {
+        const div = document.createElement('div');
+        div.className = 'request';
+        div.innerHTML = `
+          <div class="req-meta">
+            <strong>${it.brand ?? 'Dispositivo'} ${it.model ?? ''}</strong>
+            <span class="muted">ID: ${it.requestId} • há ${fmtAgo(it.createdAt)}</span>
+          </div>
+          <div class="req-actions">
+            <button class="btn outline-blue" data-act="reject" data-id="${it.requestId}">Recusar</button>
+            <button class="btn primary" data-act="accept" data-id="${it.requestId}">Aceitar</button>
+          </div>
+        `;
+        queueEl.appendChild(div);
+      }
+    }
+
+    async function acceptRequest(id) {
+      try {
+        const r = await fetch(`${API}/api/requests/${id}/accept`, {
+          method:'POST',
+          headers: { 'content-type':'application/json', 'accept':'application/json' },
+          body: JSON.stringify({})
+        });
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        const { sessionId } = await r.json();
+        if (!sessionId) throw new Error('Sem sessionId');
+        startSession(sessionId);
+        fetchQueue(); // atualiza fila
+      } catch(e) {
+        alert('Erro ao aceitar: '+e.message);
+      }
+    }
+
+    async function rejectRequest(id) {
+      try {
+        await fetch(`${API}/api/requests/${id}`, { method:'DELETE' });
+        fetchQueue();
+      } catch(e) {
+        // silencioso
+      }
+    }
+
+    queueEl.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      const id = btn.getAttribute('data-id');
+      const act = btn.getAttribute('data-act');
+      if (act === 'accept') acceptRequest(id);
+      if (act === 'reject') rejectRequest(id);
+    });
+
+    refreshBtn.onclick = fetchQueue;
+    setInterval(fetchQueue, 2000);
+    fetchQueue();
+
+    // ================== SESSÃO (WebRTC) ==================
+    function closeCurrent() {
+      if (pc) { try{ pc.close(); }catch{} pc = null; }
+      if (socket) { try{ socket.disconnect(); }catch{} socket = null; }
+      dc = null; transceiver = null;
+    }
+
+    async function startSession(sessionId) {
+      closeCurrent();
+      currentSessionId = sessionId;
+      setSessionLabel(sessionId);
+      setStatus('Conectando…');
+
+      socket = io();               // mesma origem do server
+      socket.emit('join', sessionId); // servidor mantém a mesma semântica de "sala"
+
+      pc = new RTCPeerConnection({ iceServers: iceServers() });
+
+      // Receber vídeo
+      transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+      preferVp8(transceiver);
+
+      pc.ontrack = (e) => {
+        const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+        if (video.srcObject !== stream) video.srcObject = stream;
+        setStatus('Recebendo vídeo…');
+        video.play().catch(()=>{});
+      };
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) socket.emit('signal', { room: sessionId, type: 'ice', candidate: e.candidate });
+      };
+
+      pc.ondatachannel = (evt) => {
+        dc = evt.channel;
+        dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
+        dc.onclose = () => setStatus('Canal de dados fechado');
+        dc.onmessage = (ev) => {
+          let obj = {}; try { obj = JSON.parse(ev.data); } catch {}
+          if (obj.t === 'ping')      sendDc({ t: 'pong' });
+          else if (obj.t === 'status') {
+            setStatus(`Status: ${obj.status}${obj.reason ? ' ('+obj.reason+')' : ''}`);
+          } else if (obj.t === 'stats') {
+            const { bytesSent, framesEncoded, fps, rttMs, qualityLimitation, encoderImpl } = obj;
+            setStatus(`Stats – sent: ${bytesSent}, frames: ${framesEncoded}, fps: ${fps ?? '-'}, rtt: ${rttMs ? rttMs.toFixed(0)+'ms' : '-'}, qlim: ${qualityLimitation ?? '-'}, enc: ${encoderImpl ?? '-'}`);
+          }
+        };
+      };
+
+      // Sinalização vinda do Android via servidor
+      socket.on('signal', async (msg) => {
+        if (!msg) return;
+        if (msg.type === 'offer' && msg.sdp) {
+          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit('signal', { room: sessionId, type: 'answer', sdp: answer.sdp });
+          setStatus('Conectado!');
+        } else if (msg.type === 'ice' && msg.candidate) {
+          try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
+        } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
+          try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
+        }
+      });
+
+      socket.on('peer-left', () => setStatus('Cliente encerrou o compartilhamento.'));
+    }
+
+    // Controles via DataChannel
+    qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
+    qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
+    qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
+    iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
+    statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
+    stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
+
+    // Manual / URL
+    manualJoin.onclick = () => {
+      const id = manualRoom.value.trim();
+      if (!id) return alert('Informe o ID da sessão');
+      startSession(id);
+    };
+
+    // Retrocompat: ?room=123 ou novo ?session=XYZ
+    const fromSession = getParam('session');
+    const fromRoom = getParam('room');
+    if (fromSession) startSession(fromSession);
+    else if (fromRoom) startSession(fromRoom);
+  </script>
 </body>
 </html>

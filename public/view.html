@@ -97,248 +97,234 @@
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
-    // ================== TÉCNICO (nome)
-    const techName = (localStorage.getItem('techName') || prompt('Seu nome técnico?') || 'Técnico').trim();
-    localStorage.setItem('techName', techName);
+  // ================== TÉCNICO (nome)
+  const techName = (localStorage.getItem('techName') || prompt('Seu nome técnico?') || 'Técnico').trim();
+  localStorage.setItem('techName', techName);
 
-    // ================== UTIL
-    const qs = (s) => document.querySelector(s);
-    const API = ''; // mesma origem
+  // ================== UTIL
+  const qs = (s) => document.querySelector(s);
+  const API = ''; // mesma origem
 
-    function getParam(name) {
-      const u = new URL(location.href);
-      return u.searchParams.get(name) || '';
-    }
-    function fmtAgo(ts) {
-      try {
-        const diff = (Date.now() - Number(ts))/1000;
-        if (diff < 60) return `${Math.floor(diff)}s`;
-        if (diff < 3600) return `${Math.floor(diff/60)}m`;
-        return `${Math.floor(diff/3600)}h`;
-      } catch { return ''; }
-    }
-
-    // ================== ELEMENTOS
-    const queueEl = qs('#queue');
-    const queueCount = qs('#queueCount');
-    const refreshBtn = qs('#refresh');
-    const manualRoom = qs('#manualRoom');
-    const manualJoin = qs('#manualJoin');
-
-    const video = qs('#video');
-    const statusEl = qs('#status');
-    const sessionLabel = qs('#sessionLabel');
-
-    const qLow = qs('#qLow'), qMid = qs('#qMid'), qHigh = qs('#qHigh');
-    const iceBtn = qs('#ice'), statsBtn = qs('#stats'), stopBtn = qs('#stop');
-
-    // Reforço autoplay
-    video.muted = true;
-    video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
-    video.addEventListener('canplay',        () => video.play().catch(()=>{}));
-
-    // ================== ESTADO RTC/SOCKET
-    let pc, socket, dc, transceiver;
-    let currentSessionId = null;
-    function setStatus(msg){ statusEl.textContent = msg; }
-    function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
-    function iceServers(){ return [{ urls: 'stun:stun.l.google.com:19302' }]; }
-    function sendDc(obj){ if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj)); }
-
-    function preferVp8(t) {
-      try {
-        const caps = RTCRtpReceiver.getCapabilities('video');
-        if (!caps || !t.setCodecPreferences) return;
-        const pref = [...caps.codecs].sort((a,b) => {
-          const rank = (c) => c.mimeType?.toLowerCase() === 'video/vp8' ? 0
-                           : c.mimeType?.toLowerCase() === 'video/h264' ? 1 : 2;
-          return rank(a) - rank(b);
-        });
-        t.setCodecPreferences(pref);
-      } catch(e) {}
-    }
-
-    // ================== FILA (HTTP polling)
-    async function fetchQueue() {
-      try {
-        const r = await fetch(`${API}/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
-        if (!r.ok) throw new Error('HTTP '+r.status);
-        const list = await r.json();
-        renderQueue(list);
-      } catch(e) {
-        // silencioso
-      }
-    }
-
-    function renderQueue(items) {
-      queueEl.innerHTML = '';
-      if (!items || !items.length) {
-        queueEl.innerHTML = `<div class="muted">Nenhuma solicitação por enquanto…</div>`;
-        queueCount.textContent = `0 pendente(s)`;
-        return;
-      }
-      function renderQueue(items) {
-  queueEl.innerHTML = '';
-  if (!items || !items.length) {
-    queueEl.innerHTML = `<div class="muted">Nenhuma solicitação por enquanto…</div>`;
-    queueCount.textContent = `0 pendente(s)`;
-    return;
+  function getParam(name) {
+    const u = new URL(location.href);
+    return u.searchParams.get(name) || '';
   }
-  queueCount.textContent = `${items.length} pendente(s)`;
-  for (const it of items) {
-    const div = document.createElement('div');
-    div.className = 'request';
-    div.setAttribute('data-id', it.requestId); // <- usaremos no clique no card
-    div.innerHTML = `
-      <div class="req-meta">
-        <strong>${it.brand ?? 'Dispositivo'} ${it.model ?? ''}</strong>
-        <span class="muted">ID: ${it.requestId} • há ${fmtAgo(it.createdAt)}</span>
-      </div>
-      <div class="req-actions">
-        <button class="btn outline-blue" type="button" data-act="reject" data-id="${it.requestId}">Recusar</button>
-        <button class="btn primary"      type="button" data-act="accept" data-id="${it.requestId}">Aceitar</button>
-      </div>
-    `;
-    queueEl.appendChild(div);
+  function fmtAgo(ts) {
+    try {
+      const diff = (Date.now() - Number(ts))/1000;
+      if (diff < 60) return `${Math.floor(diff)}s`;
+      if (diff < 3600) return `${Math.floor(diff/60)}m`;
+      return `${Math.floor(diff/3600)}h`;
+    } catch { return ''; }
   }
-}
 
-    async function acceptRequest(id) {
-  try {
-    setStatus('Aceitando…'); // mostra no painel da direita
-    const r = await fetch(`${API}/api/requests/${id}/accept`, {
-      method:'POST',
-      headers: { 'content-type':'application/json', 'accept':'application/json' },
-      body: JSON.stringify({ techName })
-    });
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    const { sessionId } = await r.json();
-    if (!sessionId) throw new Error('Sem sessionId');
-    startSession(sessionId);
-    fetchQueue(); // atualiza a fila
-  } catch(e) {
-    alert('Erro ao aceitar: '+e.message);
-  }
-}
+  // ================== ELEMENTOS
+  const queueEl = qs('#queue');
+  const queueCount = qs('#queueCount');
+  const refreshBtn = qs('#refresh');
+  const manualRoom = qs('#manualRoom');
+  const manualJoin = qs('#manualJoin');
 
-    async function rejectRequest(id) {
-      try {
-        await fetch(`${API}/api/requests/${id}`, { method:'DELETE' });
-        fetchQueue();
-      } catch(e) {}
-    }
+  const video = qs('#video');
+  const statusEl = qs('#status');
+  const sessionLabel = qs('#sessionLabel');
 
-    queueEl.addEventListener('click', (ev) => {
-  // 1) Se clicou em um botão com data-act, usa ele
-  const btn = ev.target.closest('button[data-act]');
-  if (btn) {
-    const id = btn.getAttribute('data-id');
-    const act = btn.getAttribute('data-act');
-    if (act === 'accept') acceptRequest(id);
-    if (act === 'reject') rejectRequest(id);
-    return;
-  }
-  // 2) Se clicou no "card" (fora dos botões), aceitar por padrão
-  const card = ev.target.closest('.request');
-  if (card && card.hasAttribute('data-id')) {
-    const id = card.getAttribute('data-id');
-    // feedback visual rápido
-    card.style.opacity = '0.6';
-    card.style.outline = '2px solid var(--brand)';
-    acceptRequest(id);
-  }
-});
+  const qLow = qs('#qLow'), qMid = qs('#qMid'), qHigh = qs('#qHigh');
+  const iceBtn = qs('#ice'), statsBtn = qs('#stats'), stopBtn = qs('#stop');
 
-    refreshBtn.onclick = fetchQueue;
-    setInterval(fetchQueue, 2000);
-    fetchQueue();
+  // Reforço autoplay
+  video.muted = true;
+  video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
+  video.addEventListener('canplay',        () => video.play().catch(()=>{}));
 
-    // ================== SESSÃO (WebRTC)
-    function closeCurrent() {
-      if (pc) { try{ pc.close(); }catch{} pc = null; }
-      if (socket) { try{ socket.disconnect(); }catch{} socket = null; }
-      dc = null; transceiver = null;
-    }
+  // ================== ESTADO RTC/SOCKET
+  let pc, socket, dc, transceiver;
+  let currentSessionId = null;
+  function setStatus(msg){ statusEl.textContent = msg; }
+  function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
+  function iceServers(){ return [{ urls: 'stun:stun.l.google.com:19302' }]; }
+  function sendDc(obj){ if (dc && dc.readyState === 'open') dc.send(JSON.stringify(obj)); }
 
-    async function startSession(sessionId) {
-      closeCurrent();
-      currentSessionId = sessionId;
-      setSessionLabel(sessionId);
-      setStatus('Conectando…');
-
-      socket = io();               // mesma origem do server
-      socket.emit('join', sessionId);
-
-      pc = new RTCPeerConnection({ iceServers: iceServers() });
-
-      // Receber vídeo
-      transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
-      preferVp8(transceiver);
-
-      pc.ontrack = (e) => {
-        const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
-        if (video.srcObject !== stream) video.srcObject = stream;
-        setStatus('Recebendo vídeo…');
-        video.play().catch(()=>{});
-      };
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) socket.emit('signal', { room: sessionId, type: 'ice', candidate: e.candidate });
-      };
-
-      pc.ondatachannel = (evt) => {
-        dc = evt.channel;
-        dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
-        dc.onclose = () => setStatus('Canal de dados fechado');
-        dc.onmessage = (ev) => {
-          let obj = {}; try { obj = JSON.parse(ev.data); } catch {}
-          if (obj.t === 'ping')      sendDc({ t: 'pong' });
-          else if (obj.t === 'status') {
-            setStatus(`Status: ${obj.status}${obj.reason ? ' ('+obj.reason+')' : ''}`);
-          } else if (obj.t === 'stats') {
-            const { bytesSent, framesEncoded, fps, rttMs, qualityLimitation, encoderImpl } = obj;
-            setStatus(`Stats – sent: ${bytesSent}, frames: ${framesEncoded}, fps: ${fps ?? '-'}, rtt: ${rttMs ? rttMs.toFixed(0)+'ms' : '-'}, qlim: ${qualityLimitation ?? '-'}, enc: ${encoderImpl ?? '-'}`);
-          }
-        };
-      };
-
-      // Sinalização vinda do Android
-      socket.on('signal', async (msg) => {
-        if (!msg) return;
-        if (msg.type === 'offer' && msg.sdp) {
-          await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('signal', { room: sessionId, type: 'answer', sdp: answer.sdp });
-          setStatus('Conectado!');
-        } else if (msg.type === 'ice' && msg.candidate) {
-          try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
-        } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
-          try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
-        }
+  function preferVp8(t) {
+    try {
+      const caps = RTCRtpReceiver.getCapabilities('video');
+      if (!caps || !t.setCodecPreferences) return;
+      const pref = [...caps.codecs].sort((a,b) => {
+        const rank = (c) => c.mimeType?.toLowerCase() === 'video/vp8' ? 0
+                         : c.mimeType?.toLowerCase() === 'video/h264' ? 1 : 2;
+        return rank(a) - rank(b);
       });
+      t.setCodecPreferences(pref);
+    } catch(e) {}
+  }
 
-      socket.on('peer-left', () => setStatus('Cliente encerrou o compartilhamento.'));
+  // ================== FILA (HTTP polling)
+  async function fetchQueue() {
+    try {
+      const r = await fetch(`${API}/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const list = await r.json();
+      renderQueue(list);
+    } catch(e) {
+      // silencioso
     }
+  }
 
-    // Controles via DataChannel
-    qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
-    qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
-    qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
-    iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
-    statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
-    stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
+  function renderQueue(items) {
+    queueEl.innerHTML = '';
+    if (!items || !items.length) {
+      queueEl.innerHTML = `<div class="muted">Nenhuma solicitação por enquanto…</div>`;
+      queueCount.textContent = `0 pendente(s)`;
+      return;
+    }
+    queueCount.textContent = `${items.length} pendente(s)`;
+    for (const it of items) {
+      const div = document.createElement('div');
+      div.className = 'request';
+      div.dataset.id = it.requestId;
+      div.innerHTML = `
+        <div class="req-meta">
+          <strong>${it.brand ?? 'Dispositivo'} ${it.model ?? ''}</strong>
+          <span class="muted">ID: ${it.requestId} • há ${fmtAgo(it.createdAt)}</span>
+        </div>
+        <div class="req-actions">
+          <button class="btn outline-blue" type="button" data-act="reject" data-id="${it.requestId}">Recusar</button>
+          <button class="btn primary"      type="button" data-act="accept" data-id="${it.requestId}">Aceitar</button>
+        </div>
+      `;
+      queueEl.appendChild(div);
+    }
+  }
 
-    // Manual / URL
-    manualJoin.onclick = () => {
-      const id = manualRoom.value.trim();
-      if (!id) return alert('Informe o ID da sessão');
-      startSession(id);
+  async function acceptRequest(id) {
+    try {
+      setStatus('Aceitando…');
+      const r = await fetch(`${API}/api/requests/${id}/accept`, {
+        method:'POST',
+        headers: { 'content-type':'application/json', 'accept':'application/json' },
+        body: JSON.stringify({ techName })
+      });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const { sessionId } = await r.json();
+      if (!sessionId) throw new Error('Sem sessionId');
+      startSession(sessionId);
+      fetchQueue();
+    } catch(e) {
+      alert('Erro ao aceitar: '+e.message);
+    }
+  }
+
+  async function rejectRequest(id) {
+    try {
+      await fetch(`${API}/api/requests/${id}`, { method:'DELETE' });
+      fetchQueue();
+    } catch(e) {}
+  }
+
+  queueEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (btn) {
+      const id = btn.getAttribute('data-id');
+      const act = btn.getAttribute('data-act');
+      if (act === 'accept') acceptRequest(id);
+      if (act === 'reject') rejectRequest(id);
+      return;
+    }
+    const card = ev.target.closest('.request');
+    if (card && card.dataset.id) {
+      const id = card.dataset.id;
+      card.style.opacity = '0.6';
+      card.style.outline = '2px solid var(--brand)';
+      acceptRequest(id);
+    }
+  });
+
+  refreshBtn.onclick = fetchQueue;
+  setInterval(fetchQueue, 2000);
+  fetchQueue();
+
+  // ================== SESSÃO (WebRTC)
+  function closeCurrent() {
+    if (pc) { try{ pc.close(); }catch{} pc = null; }
+    if (socket) { try{ socket.disconnect(); }catch{} socket = null; }
+    dc = null; transceiver = null;
+  }
+
+  async function startSession(sessionId) {
+    closeCurrent();
+    currentSessionId = sessionId;
+    setSessionLabel(sessionId);
+    setStatus('Conectando…');
+
+    socket = io();              // mesma origem do server
+    socket.emit('join', sessionId);
+
+    pc = new RTCPeerConnection({ iceServers: iceServers() });
+
+    transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    preferVp8(transceiver);
+
+    pc.ontrack = (e) => {
+      const stream = (e.streams && e.streams[0]) ? e.streams[0] : new MediaStream([e.track]);
+      if (video.srcObject !== stream) video.srcObject = stream;
+      setStatus('Recebendo vídeo…');
+      video.play().catch(()=>{});
     };
-    const fromSession = getParam('session');
-    const fromRoom = getParam('room');
-    if (fromSession) startSession(fromSession);
-    else if (fromRoom) startSession(fromRoom);
-  </script>
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) socket.emit('signal', { room: sessionId, type: 'ice', candidate: e.candidate });
+    };
+
+    pc.ondatachannel = (evt) => {
+      dc = evt.channel;
+      dc.onopen = () => setStatus('Conectado (canal de dados pronto)');
+      dc.onclose = () => setStatus('Canal de dados fechado');
+      dc.onmessage = (ev) => {
+        let obj = {}; try { obj = JSON.parse(ev.data); } catch {}
+        if (obj.t === 'ping')      sendDc({ t: 'pong' });
+        else if (obj.t === 'status') {
+          setStatus(`Status: ${obj.status}${obj.reason ? ' ('+obj.reason+')' : ''}`);
+        } else if (obj.t === 'stats') {
+          const { bytesSent, framesEncoded, fps, rttMs, qualityLimitation, encoderImpl } = obj;
+          setStatus(`Stats – sent: ${bytesSent}, frames: ${framesEncoded}, fps: ${fps ?? '-'}, rtt: ${rttMs ? rttMs.toFixed(0)+'ms' : '-'}, qlim: ${qualityLimitation ?? '-'}, enc: ${encoderImpl ?? '-'}`);
+        }
+      };
+    };
+
+    socket.on('signal', async (msg) => {
+      if (!msg) return;
+      if (msg.type === 'offer' && msg.sdp) {
+        await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('signal', { room: sessionId, type: 'answer', sdp: answer.sdp });
+        setStatus('Conectado!');
+      } else if (msg.type === 'ice' && msg.candidate) {
+        try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.error(e); }
+      } else if (msg.candidate && msg.sdpMLineIndex !== undefined) {
+        try { await pc.addIceCandidate(msg); } catch (e) { console.error(e); }
+      }
+    });
+
+    socket.on('peer-left', () => setStatus('Cliente encerrou o compartilhamento.'));
+  }
+
+  qLow.onclick  = () => sendDc({ cmd: 'quality', level: 'low'  });
+  qMid.onclick  = () => sendDc({ cmd: 'quality', level: 'mid'  });
+  qHigh.onclick = () => sendDc({ cmd: 'quality', level: 'high' });
+  iceBtn.onclick   = () => sendDc({ cmd: 'ice-restart' });
+  statsBtn.onclick = () => sendDc({ cmd: 'request-stats' });
+  stopBtn.onclick  = () => sendDc({ cmd: 'stop' });
+
+  manualJoin.onclick = () => {
+    const id = manualRoom.value.trim();
+    if (!id) return alert('Informe o ID da sessão');
+    startSession(id);
+  };
+  const fromSession = getParam('session');
+  const fromRoom = getParam('room');
+  if (fromSession) startSession(fromSession);
+  else if (fromRoom) startSession(fromRoom);
+</script>
 </body>
 </html>

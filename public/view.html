@@ -87,10 +87,13 @@
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
-    // ================== UTIL ==================
+    // ================== TÉCNICO (nome)
+    const techName = (localStorage.getItem('techName') || prompt('Seu nome técnico?') || 'Técnico').trim();
+    localStorage.setItem('techName', techName);
+
+    // ================== UTIL
     const qs = (s) => document.querySelector(s);
-    const qsa = (s) => Array.from(document.querySelectorAll(s));
-    const API = ''; // mesma origem do server (ex.: /api/requests)
+    const API = ''; // mesma origem
 
     function getParam(name) {
       const u = new URL(location.href);
@@ -98,15 +101,14 @@
     }
     function fmtAgo(ts) {
       try {
-        const d = new Date(ts);
-        const diff = (Date.now() - d.getTime())/1000;
+        const diff = (Date.now() - Number(ts))/1000;
         if (diff < 60) return `${Math.floor(diff)}s`;
         if (diff < 3600) return `${Math.floor(diff/60)}m`;
         return `${Math.floor(diff/3600)}h`;
       } catch { return ''; }
     }
 
-    // ================== ELEMENTOS ==================
+    // ================== ELEMENTOS
     const queueEl = qs('#queue');
     const queueCount = qs('#queueCount');
     const refreshBtn = qs('#refresh');
@@ -125,10 +127,9 @@
     video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
     video.addEventListener('canplay',        () => video.play().catch(()=>{}));
 
-    // ================== ESTADO RTC/SOCKET ==================
+    // ================== ESTADO RTC/SOCKET
     let pc, socket, dc, transceiver;
     let currentSessionId = null;
-
     function setStatus(msg){ statusEl.textContent = msg; }
     function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
     function iceServers(){ return [{ urls: 'stun:stun.l.google.com:19302' }]; }
@@ -144,18 +145,18 @@
           return rank(a) - rank(b);
         });
         t.setCodecPreferences(pref);
-      } catch(e) { console.warn('codec pref not applied', e); }
+      } catch(e) {}
     }
 
-    // ================== FILA (HTTP polling) ==================
+    // ================== FILA (HTTP polling)
     async function fetchQueue() {
       try {
         const r = await fetch(`${API}/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
         if (!r.ok) throw new Error('HTTP '+r.status);
-        const list = await r.json(); // espera [{requestId, deviceId, brand, model, createdAt}]
+        const list = await r.json();
         renderQueue(list);
       } catch(e) {
-        // silencioso; evita travar se o endpoint ainda não existe
+        // silencioso
       }
     }
 
@@ -172,7 +173,7 @@
         div.className = 'request';
         div.innerHTML = `
           <div class="req-meta">
-            <strong>${it.brand ?? 'Dispositivo'} ${it.model ?? ''}</strong>
+            <strong>${(it.brand ?? 'Dispositivo')} ${it.model ?? ''}</strong>
             <span class="muted">ID: ${it.requestId} • há ${fmtAgo(it.createdAt)}</span>
           </div>
           <div class="req-actions">
@@ -189,13 +190,13 @@
         const r = await fetch(`${API}/api/requests/${id}/accept`, {
           method:'POST',
           headers: { 'content-type':'application/json', 'accept':'application/json' },
-          body: JSON.stringify({})
+          body: JSON.stringify({ techName })
         });
         if (!r.ok) throw new Error('HTTP '+r.status);
         const { sessionId } = await r.json();
         if (!sessionId) throw new Error('Sem sessionId');
         startSession(sessionId);
-        fetchQueue(); // atualiza fila
+        fetchQueue();
       } catch(e) {
         alert('Erro ao aceitar: '+e.message);
       }
@@ -205,9 +206,7 @@
       try {
         await fetch(`${API}/api/requests/${id}`, { method:'DELETE' });
         fetchQueue();
-      } catch(e) {
-        // silencioso
-      }
+      } catch(e) {}
     }
 
     queueEl.addEventListener('click', (ev) => {
@@ -223,7 +222,7 @@
     setInterval(fetchQueue, 2000);
     fetchQueue();
 
-    // ================== SESSÃO (WebRTC) ==================
+    // ================== SESSÃO (WebRTC)
     function closeCurrent() {
       if (pc) { try{ pc.close(); }catch{} pc = null; }
       if (socket) { try{ socket.disconnect(); }catch{} socket = null; }
@@ -237,7 +236,7 @@
       setStatus('Conectando…');
 
       socket = io();               // mesma origem do server
-      socket.emit('join', sessionId); // servidor mantém a mesma semântica de "sala"
+      socket.emit('join', sessionId);
 
       pc = new RTCPeerConnection({ iceServers: iceServers() });
 
@@ -272,7 +271,7 @@
         };
       };
 
-      // Sinalização vinda do Android via servidor
+      // Sinalização vinda do Android
       socket.on('signal', async (msg) => {
         if (!msg) return;
         if (msg.type === 'offer' && msg.sdp) {
@@ -305,8 +304,6 @@
       if (!id) return alert('Informe o ID da sessão');
       startSession(id);
     };
-
-    // Retrocompat: ?room=123 ou novo ?session=XYZ
     const fromSession = getParam('session');
     const fromRoom = getParam('room');
     if (fromSession) startSession(fromSession);

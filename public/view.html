@@ -390,6 +390,22 @@ function announce(room){
   // alguns backends escutam pelo nome da sala
   socket.emit(room, { t:'tech-joined', ...payload });
 }
+    // NOVO: pedir ao app para enviar a SDP offer (falamos vários "dialetos")
+function requestOffer() {
+  const base = { room: currentSessionId, session: currentSessionId, sessionId: currentSessionId, techName, role:'tech' };
+
+  // eventos que diferentes apps/servidores costumam escutar
+  const evs = [
+    'need-offer','request-offer','send-offer','create-offer','offer?','rtc-offer?','sdp-offer?',
+    'call','call-me','start','start-rtc','start-share','viewer-ready','watcher','ready-for-offer'
+  ];
+  evs.forEach(ev => socket.emit(ev, base));
+
+  // e também em canais genéricos/room
+  socket.emit('signal', { ...base, t:'need-offer' });
+  socket.emit('webrtc', { ...base, t:'need-offer' });
+  socket.emit(currentSessionId, { ...base, t:'need-offer' });
+}
     
   function wireSocketHandlers(){
     socket.onAny(onAnySocketEvent);
@@ -432,6 +448,18 @@ function announce(room){
     socket.on('peer-left', ()=> setStatus('Cliente encerrou o compartilhamento.'));
     socket.on('connect_error', (e)=> setStatus('Socket erro: '+e.message));
     socket.on('disconnect', (r)=> console.debug('socket disconnect', r));
+    
+    // quando o app entra na sala, pedimos a offer
+socket.on('peer-joined', (info) => {
+  console.debug('peer-joined', info);
+  setStatus('Cliente entrou. Solicitando offer…');
+  requestOffer();
+});
+
+// alguns backends perguntam identidade antes de mandar a offer
+socket.on('who-are-you', () => announce(currentSessionId));
+socket.on('ready',        () => requestOffer());
+socket.on('peer-ready',   () => requestOffer());
   }
 
   async function startSession(sessionId){
@@ -448,7 +476,10 @@ wireSocketHandlers();
 // anuncia em vários formatos assim que conectar
 socket.on('connect', () => {
   setStatus('Socket conectado');
-  announce(sessionId);
+  announce(sessionId);      // nos apresentamos (join, tech-hello, etc.)
+  requestOffer();           // e já pedimos a offer
+  // retry rápido caso o app demore um pouco para preparar a offer
+  setTimeout(requestOffer, 500);
 });
 
 // alguns backends perguntam antes

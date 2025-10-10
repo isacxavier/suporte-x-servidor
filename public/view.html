@@ -381,7 +381,16 @@
       console.warn('Falha addIceCandidate', e);
     }
   }
-
+    
+// NOVO: fala várias "línguas" com o app/servidor ao entrar na sala
+function announce(room){
+  const payload = { room, session: room, sessionId: room, id: room, techName, role: 'tech' };
+  ['join','join-room','subscribe','watch','viewer-join','support-join','tech-hello','ready','hello']
+    .forEach(ev => socket.emit(ev, payload));
+  // alguns backends escutam pelo nome da sala
+  socket.emit(room, { t:'tech-joined', ...payload });
+}
+    
   function wireSocketHandlers(){
     socket.onAny(onAnySocketEvent);
 
@@ -410,6 +419,15 @@
     socket.on('candidate', handleRemoteCandidate);
     socket.on('ice-candidate', handleRemoteCandidate);
     socket.on('app-candidate', handleRemoteCandidate);
+    // ofertas em nomes alternativos
+    socket.on('sdp-offer',     handleOfferMessage);
+    socket.on('rtc-offer',     handleOfferMessage);
+    socket.on('offer-created', handleOfferMessage);
+
+    // ICE em nomes alternativos
+    socket.on('ice',           handleRemoteCandidate);
+    socket.on('iceCandidate',  handleRemoteCandidate);
+    socket.on('rtc-ice',       handleRemoteCandidate);
 
     socket.on('peer-left', ()=> setStatus('Cliente encerrou o compartilhamento.'));
     socket.on('connect_error', (e)=> setStatus('Socket erro: '+e.message));
@@ -424,11 +442,20 @@
     setSessionLabel(sessionId);
     setStatus('Conectando…');
 
-    // Conecta no mesmo host da API (ou mesma origem se API = '')
-    socket = io(API || undefined, { transports: ['websocket'], path: '/socket.io', withCredentials: true });
-    wireSocketHandlers();
-    socket.emit('join', sessionId);
-    socket.emit('tech-hello', { room: sessionId, techName });
+    socket = io(API || undefined, { path:'/socket.io', transports:['websocket'], withCredentials:true });
+wireSocketHandlers();
+
+// anuncia em vários formatos assim que conectar
+socket.on('connect', () => {
+  setStatus('Socket conectado');
+  announce(sessionId);
+});
+
+// alguns backends perguntam antes
+socket.on('ready?', () => announce(sessionId));
+
+// e já tenta anunciar imediatamente também
+announce(sessionId);
 
     pc = new RTCPeerConnection({ iceServers: iceServers() });
 

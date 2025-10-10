@@ -33,16 +33,29 @@
     code.pill{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
     .kbd{font:12px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:#f3f4f6; border:1px solid #e5e7eb; padding:.1rem .35rem; border-radius:6px}
     .statusline{margin:.5rem 0 0; font-size:.95rem}
+    input[type="text"], input[type="url"]{
+      padding:.5rem .65rem; border:1px solid var(--line); border-radius:10px; flex:1 1 auto;
+    }
+    .small{font-size:.85rem}
   </style>
 </head>
 <body>
   <div class="grid">
-    <!-- ESQUERDA: FILA -->
+    <!-- ESQUERDA: FILA + PERFIL -->
     <aside class="card">
       <div class="title">
         <h2 style="margin:0">Central do Técnico</h2><span class="dot" title="online"></span>
       </div>
-      <p class="muted" style="margin:.4rem 0 1rem 0">Solicitações aguardando aceite.</p>
+      <p class="muted" style="margin:.4rem 0 .75rem 0">Solicitações aguardando aceite.</p>
+
+      <!-- Perfil do técnico -->
+      <div class="row" style="margin-bottom:.5rem">
+        <label for="techNameInput" class="muted small">Nome do técnico</label>
+      </div>
+      <div class="row" style="margin-bottom:.75rem">
+        <input id="techNameInput" type="text" placeholder="Ex.: João (NOC)">
+        <button id="saveTech" class="btn">Salvar</button>
+      </div>
 
       <div class="row" style="justify-content:space-between; margin-bottom:.5rem">
         <span id="queueCount" class="pill">0 pendente(s)</span>
@@ -56,12 +69,21 @@
       <hr style="margin:1rem 0;border:none;border-top:1px solid var(--line)">
 
       <details>
-        <summary class="muted">Entrar manualmente (debug)</summary>
+        <summary class="muted">Debug / Entrada manual</summary>
+
         <div class="row" style="margin-top:.5rem">
           <input id="manualRoom" type="text" placeholder="sessionId (ou room antigo)" />
           <button id="manualJoin" class="btn">Entrar</button>
         </div>
-        <p class="muted" style="margin-top:.3rem">Também funciona com <code>?session=XYZ</code> ou <code>?room=123456</code> na URL.</p>
+
+        <div class="row" style="margin-top:.5rem">
+          <input id="apiBase" type="url" placeholder="URL do servidor (API)" />
+          <button id="saveApi" class="btn">Definir API</button>
+        </div>
+
+        <p class="muted small" style="margin-top:.3rem">
+          Também funciona com <code>?session=XYZ</code> ou <code>?room=123456</code> na URL.
+        </p>
       </details>
     </aside>
 
@@ -85,18 +107,41 @@
 
       <video id="video" autoplay playsinline muted></video>
       <p class="muted statusline" id="status">Aguardando…</p>
+      <p class="muted small" id="serverLabel" style="margin:.25rem 0 0 0"></p>
     </main>
   </div>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
-  // ================== IDENTIFICAÇÃO
-  const techName = (localStorage.getItem('techName') || prompt('Seu nome técnico?') || 'Técnico').trim();
-  localStorage.setItem('techName', techName);
+  // ================== CONFIG / PERFIL
+  const DEFAULT_API = 'https://suporte-x-quickview-server.onrender.com';
+  const getStored = (k, d='') => (localStorage.getItem(k) ?? d);
+  const setStored = (k, v) => localStorage.setItem(k, v);
+
+  // API base pode ser outro domínio. Se vazio => mesma origem.
+  let API = getStored('apiBase', DEFAULT_API);
+  const serverLabel = document.getElementById('serverLabel');
+  function showServer(){ serverLabel.textContent = 'Servidor: ' + (API || location.origin); }
+  showServer();
+
+  // Nome do técnico (com campo na UI)
+  let techName = (getStored('techName') || '').trim();
+  const techNameInput = document.getElementById('techNameInput');
+  const saveTech = document.getElementById('saveTech');
+  if(!techName){ techName = prompt('Seu nome técnico?') || 'Técnico'; }
+  techName = techName.trim();
+  setStored('techName', techName);
+  techNameInput.value = techName;
+  saveTech.onclick = () => {
+    const v = techNameInput.value.trim();
+    if(!v) return alert('Informe um nome.');
+    techName = v; setStored('techName', v);
+    setStatus('Nome do técnico atualizado.');
+  };
 
   // ================== UTIL
   const qs = (s) => document.querySelector(s);
-  const API = ''; // mesma origem
+  const apiFetch = (path, opts={}) => fetch((API || '') + path, opts);
 
   function getParam(name){
     const u = new URL(location.href);
@@ -120,6 +165,8 @@
   const refreshBtn = qs('#refresh');
   const manualRoom = qs('#manualRoom');
   const manualJoin = qs('#manualJoin');
+  const apiBaseInput = qs('#apiBase');
+  const saveApiBtn   = qs('#saveApi');
 
   const video = qs('#video');
   const statusEl = qs('#status');
@@ -133,15 +180,24 @@
   video.addEventListener('loadedmetadata', () => video.play().catch(()=>{}));
   video.addEventListener('canplay',        () => video.play().catch(()=>{}));
 
+  // salvar/mostrar API base
+  apiBaseInput.value = API;
+  saveApiBtn.onclick = () => {
+    const v = apiBaseInput.value.trim().replace(/\/+$/,'');
+    API = v;
+    setStored('apiBase', API);
+    showServer();
+    setStatus('API atualizada. Recarregue se for outro host.');
+  };
+
   // ================== POLLING DA FILA
   async function fetchQueue(){
     try{
-      const r = await fetch(`${API}/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
+      const r = await apiFetch(`/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
       if(!r.ok) throw new Error('HTTP '+r.status);
       const list = await r.json();
       renderQueue(list);
     }catch(e){
-      // silencioso para não incomodar o técnico
       console.debug('fetchQueue error', e);
     }
   }
@@ -172,25 +228,40 @@
   }
 
   async function acceptRequest(id){
+    const body = JSON.stringify({ techName });
     try{
       setStatus('Aceitando…');
-      const r = await fetch(`${API}/api/requests/${id}/accept`, {
+      // rota padrão
+      let r = await apiFetch(`/api/requests/${id}/accept`, {
         method:'POST',
         headers:{'content-type':'application/json','accept':'application/json'},
-        body: JSON.stringify({ techName })
+        body
       });
+
+      // fallback para backends antigos (sem /accept)
+      if(r.status === 404){
+        console.warn('Fallback sem /accept');
+        r = await apiFetch(`/api/requests/${id}`, {
+          method:'POST',
+          headers:{'content-type':'application/json','accept':'application/json'},
+          body
+        });
+      }
+
       if(!r.ok) throw new Error('HTTP '+r.status);
       const { sessionId } = await r.json();
       if(!sessionId) throw new Error('Sem sessionId');
       startSession(sessionId);
       fetchQueue();
     }catch(e){
+      console.error('Erro ao aceitar', e);
+      setStatus('Falha ao aceitar: ' + e.message);
       alert('Erro ao aceitar: '+e.message);
     }
   }
   async function rejectRequest(id){
     try{
-      await fetch(`${API}/api/requests/${id}`, { method:'DELETE' });
+      await apiFetch(`/api/requests/${id}`, { method:'DELETE' });
       fetchQueue();
     }catch(e){}
   }
@@ -221,7 +292,6 @@
   let pc, socket, dc, transceiver;
   let currentSessionId = null;
 
-  // fila de ICE que chegam antes da offer
   const earlyRemoteCandidates = [];
   let remoteDescSet = false;
 
@@ -239,7 +309,6 @@
   }
 
   function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
-
   function sendDc(obj){ try{ if(dc && dc.readyState==='open') dc.send(JSON.stringify(obj)); }catch(e){} }
 
   function preferVp8(t){
@@ -261,7 +330,7 @@
 
   function normalizeSdpFrom(msg){
     if(!msg) return null;
-    if(typeof msg === 'string') return msg; // às vezes vem sdp pura
+    if(typeof msg === 'string') return msg;
     if(msg.sdp) return msg.sdp;
     if(msg.offer) return msg.offer;
     if(msg.description?.sdp) return msg.description.sdp;
@@ -281,13 +350,10 @@
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      // enviar em formatos diferentes para compatibilidade
       const payload = { room: currentSessionId, type:'answer', sdp: answer.sdp };
       socket.emit('signal', payload);
       socket.emit('answer', { room: currentSessionId, sdp: answer.sdp, type:'answer' });
-      console.debug('Answer enviada');
 
-      // aplicar candidatos que chegaram cedo
       while(earlyRemoteCandidates.length){
         const c = earlyRemoteCandidates.shift();
         try{ await pc.addIceCandidate(c); }catch(err){ console.warn('Falha addIceCandidate (early)', err); }
@@ -302,7 +368,7 @@
 
   async function handleRemoteCandidate(obj){
     try{
-      const c = obj?.candidate ? obj.candidate : obj; // aceita shape direto
+      const c = obj?.candidate ? obj.candidate : obj;
       if(!c || (!c.candidate && c.candidate!=='')) return;
 
       if(!remoteDescSet){
@@ -317,7 +383,6 @@
   }
 
   function wireSocketHandlers(){
-    // log de tudo
     socket.onAny(onAnySocketEvent);
 
     const onSignal = async (msg)=>{
@@ -327,12 +392,10 @@
           await handleOfferMessage(msg);
           return;
         }
-        // candidatos
         if(t.toLowerCase()==='ice' || t.toLowerCase()==='candidate' || msg.candidate || msg.ice){
           await handleRemoteCandidate(msg.candidate ? msg : (msg.ice ? msg.ice : msg));
           return;
         }
-        // alguns backends mandam {sdp, type:'offer'} dentro do próprio 'signal'
         if(msg.sdp && msg.type === 'offer'){
           await handleOfferMessage(msg);
           return;
@@ -340,7 +403,6 @@
       }catch(e){ console.warn('onSignal error', e); }
     };
 
-    // eventos conhecidos
     socket.on('signal', onSignal);
     socket.on('webrtc', onSignal);
     socket.on('offer', handleOfferMessage);
@@ -362,18 +424,17 @@
     setSessionLabel(sessionId);
     setStatus('Conectando…');
 
-    socket = io(); // mesma origem
+    // Conecta no mesmo host da API (ou mesma origem se API = '')
+    socket = io(API || undefined, { transports: ['websocket'], path: '/socket.io', withCredentials: true });
     wireSocketHandlers();
     socket.emit('join', sessionId);
     socket.emit('tech-hello', { room: sessionId, techName });
 
     pc = new RTCPeerConnection({ iceServers: iceServers() });
 
-    // Receber apenas vídeo
     transceiver = pc.addTransceiver('video', { direction:'recvonly' });
     preferVp8(transceiver);
 
-    // eventos de estado para debug fino
     pc.oniceconnectionstatechange = ()=> setStatus(`ICE: ${pc.iceConnectionState}`);
     pc.onconnectionstatechange = ()=> setStatus(`PC: ${pc.connectionState}`);
     pc.onsignalingstatechange = ()=> console.debug('signaling:', pc.signalingState);
@@ -404,7 +465,6 @@
     pc.onicecandidate = (e)=>{
       if(!e.candidate) return;
       const payload = { room: currentSessionId, type:'ice', candidate: e.candidate };
-      // envia nos dois formatos para garantir compatibilidade
       socket.emit('signal', payload);
       socket.emit('candidate', { room: currentSessionId, candidate: e.candidate });
     };

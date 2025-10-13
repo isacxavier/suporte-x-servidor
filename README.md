@@ -7,6 +7,18 @@
 - `view.html` (no navegador do técnico): recebe o vídeo.
 - `server.js` (Node + Socket.IO): faz a **sinalização** (troca de SDP/ICE). O vídeo trafega P2P quando possível.
 
+### Estrutura básica do projeto
+
+Se você nunca trabalhou com WebRTC ou Socket.IO, este repositório pode parecer confuso à primeira vista. A estrutura é
+intencionalmente enxuta:
+
+- `public/`: contém os arquivos estáticos servidos para navegador, incluindo `send.html` (cliente) e `view.html` (técnico).
+- `server.js`: cria um servidor Express + Socket.IO responsável apenas por intermediar a troca das mensagens de sinalização.
+- `package.json`: lista dependências (Express e Socket.IO) e scripts (`npm start`).
+
+> Não existe build front-end. O HTML/JS é carregado diretamente pelo navegador, o que facilita a leitura do código para quem
+> está começando. Abra os arquivos do diretório `public/` para entender a lógica passo a passo.
+
 > Em produção, **HTTPS** é obrigatório para `getDisplayMedia`. Ao hospedar no Render, Vercel, etc., você terá HTTPS automaticamente.
 
 ## Rodando localmente (teste rápido)

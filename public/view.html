@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Central do Técnico • Suporte_X</title>
+  <title>Painel de Atendimentos • Suporte_X</title>
   <link rel="stylesheet" href="/style.css" />
   <style>
     :root{
@@ -14,7 +14,6 @@
     body{background:var(--bg); margin:0; font:14px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu}
     .grid{display:grid; grid-template-columns:360px 1fr; gap:1rem; align-items:start; padding:1.25rem}
     .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:1rem; box-shadow:0 6px 18px rgba(16,24,40,.06)}
-    .title{display:flex; align-items:center; gap:.5rem}
     .dot{width:10px;height:10px;background:#22C55E;border-radius:50%}
     .muted{color:var(--muted)}
     .row{display:flex; gap:.5rem; align-items:center; flex-wrap:wrap}
@@ -37,16 +36,65 @@
       padding:.5rem .65rem; border:1px solid var(--line); border-radius:10px; flex:1 1 auto;
     }
     .small{font-size:.85rem}
+    .tech-header-wrap{position:relative; margin-bottom:.75rem}
+    .tech-header{display:flex; align-items:center; gap:.75rem}
+    .tech-header-texts{display:flex; flex-direction:column; gap:.15rem}
+    .tech-header-texts .name-row{display:flex; align-items:center; gap:.35rem}
+    .avatar-button{width:44px; height:44px; border-radius:999px; border:none; background:#e5e7eb; display:inline-flex; align-items:center; justify-content:center; font-weight:600; color:#111; cursor:pointer; position:relative; overflow:hidden; transition:transform .2s ease}
+    .avatar-button:hover{transform:scale(1.02)}
+    .avatar-button:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+    .avatar-button span{font-size:1rem}
+    .avatar-button img{width:100%; height:100%; object-fit:cover; display:none}
+    .avatar-button.has-photo img{display:block}
+    .avatar-button.has-photo span{display:none}
+    .avatar-menu{position:absolute; top:60px; left:0; background:var(--card); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.16); padding:.35rem; min-width:160px; display:none; z-index:20}
+    .avatar-menu.open{display:block}
+    .avatar-menu button{width:100%; padding:.5rem .75rem; border:none; background:none; text-align:left; border-radius:8px; cursor:pointer; font:inherit; color:inherit}
+    .avatar-menu button:hover{background:#f3f4f6}
+    .switch{position:relative; display:inline-block; width:46px; height:26px}
+    .switch input{opacity:0; width:0; height:0}
+    .slider{position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#e5e7eb; border-radius:999px; transition:.2s}
+    .slider:before{content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s}
+    .switch input:checked + .slider{background:#22C55E}
+    .switch input:checked + .slider:before{transform:translateX(20px)}
+    #autoSwitchLabel{margin-top:.15rem}
+    #autoSwitchLabel.on{color:#15803d; font-weight:600}
+    .pulse-border{animation:pulse 2s ease-out 1}
+    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,203,25,.6);}100%{box-shadow:0 0 0 12px rgba(255,203,25,0);}}
   </style>
 </head>
 <body>
   <div class="grid">
     <!-- ESQUERDA: FILA + PERFIL -->
     <aside class="card">
-      <div class="title">
-        <h2 style="margin:0">Central do Técnico</h2><span class="dot" title="online"></span>
+      <div class="tech-header-wrap">
+        <div class="tech-header">
+          <button id="avatarButton" class="avatar-button" type="button" aria-haspopup="true" aria-expanded="false">
+            <img id="avatarImage" alt="" hidden>
+            <span id="avatarInitials">TX</span>
+          </button>
+          <div class="tech-header-texts">
+            <div class="name-row">
+              <strong id="techNameDisplay">Técnico</strong>
+              <span class="dot" title="online"></span>
+            </div>
+            <span class="muted small" id="techStatusLabel">Disponível</span>
+          </div>
+        </div>
+        <div id="avatarMenu" class="avatar-menu" role="menu" aria-hidden="true">
+          <button type="button" id="editNameMenu" role="menuitem">Alterar nome</button>
+        </div>
       </div>
-      <p class="muted" style="margin:.4rem 0 .75rem 0">Solicitações aguardando aceite.</p>
+
+      <div class="row" id="availabilityRow" style="margin-bottom:.25rem">
+        <label class="muted small" style="flex:1">Painel de Atendimentos</label>
+        <label class="switch">
+          <input id="autoSwitch" type="checkbox" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="small muted" id="autoSwitchLabel">ACEITAR CHAMADOS AUTOMATICAMENTE</div>
+      <p class="muted" style="margin:.75rem 0 .75rem 0">Solicitações aguardando aceite.</p>
 
       <!-- Perfil do técnico -->
       <div class="row" style="margin-bottom:.5rem">
@@ -136,6 +184,7 @@
     const v = techNameInput.value.trim();
     if(!v) return alert('Informe um nome.');
     techName = v; setStored('techName', v);
+    updateTechProfile();
     setStatus('Nome do técnico atualizado.');
   };
 
@@ -174,6 +223,125 @@
 
   const qLow = qs('#qLow'), qMid = qs('#qMid'), qHigh = qs('#qHigh');
   const iceBtn = qs('#ice'), statsBtn = qs('#stats'), stopBtn = qs('#stop');
+  const autoSwitch = qs('#autoSwitch');
+  const autoSwitchLabel = qs('#autoSwitchLabel');
+  const techNameDisplay = document.getElementById('techNameDisplay');
+  const techStatusLabel = document.getElementById('techStatusLabel');
+  const avatarButton = document.getElementById('avatarButton');
+  const avatarImage = document.getElementById('avatarImage');
+  const avatarInitials = document.getElementById('avatarInitials');
+  const avatarMenu = document.getElementById('avatarMenu');
+  const editNameMenu = document.getElementById('editNameMenu');
+  const profileInfo = window.__profile || window.profile || {};
+  const photoUrl = profileInfo?.photoUrl || '';
+
+  let autoSwitchOn = false;
+  let isAutoAccepting = false;
+  let lastQueueList = [];
+  let pc, socket, dc, transceiver;
+  let currentSessionId = null;
+  const earlyRemoteCandidates = [];
+  let remoteDescSet = false;
+
+  function computeInitials(name){
+    if(!name) return 'TX';
+    const parts = String(name).trim().split(/\s+/).filter(Boolean);
+    if(!parts.length) return 'TX';
+    const first = parts[0]?.[0] ?? '';
+    const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? '') : '';
+    const combo = (first + last).toUpperCase();
+    if(combo.trim()) return combo;
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+
+  function updateTechProfile(){
+    const displayName = techName || 'Técnico';
+    if(techNameDisplay) techNameDisplay.textContent = displayName;
+    if(techStatusLabel){
+      if(currentSessionId){
+        techStatusLabel.textContent = 'Em atendimento';
+      }else{
+        techStatusLabel.textContent = autoSwitchOn ? 'Aceitando automaticamente' : 'Disponível';
+      }
+    }
+    if(avatarInitials) avatarInitials.textContent = computeInitials(displayName);
+    if(photoUrl && avatarImage && avatarButton){
+      avatarImage.src = photoUrl;
+      avatarImage.alt = displayName;
+      avatarImage.hidden = false;
+      avatarButton.classList.add('has-photo');
+    }else if(avatarImage && avatarButton){
+      avatarImage.removeAttribute('src');
+      avatarImage.alt = '';
+      avatarImage.hidden = true;
+      avatarButton.classList.remove('has-photo');
+    }
+  }
+
+  function updateAutoLabel(){
+    if(!autoSwitchLabel) return;
+    autoSwitchLabel.textContent = autoSwitchOn ? 'ACEITANDO AUTOMATICAMENTE' : 'ACEITAR CHAMADOS AUTOMATICAMENTE';
+    autoSwitchLabel.classList.toggle('on', !!autoSwitchOn);
+  }
+
+  function closeAvatarMenu(){
+    if(avatarMenu){
+      avatarMenu.classList.remove('open');
+      avatarMenu.setAttribute('aria-hidden', 'true');
+    }
+    if(avatarButton){
+      avatarButton.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  if(autoSwitch){
+    autoSwitch.checked = false;
+    autoSwitchOn = false;
+    updateAutoLabel();
+    updateTechProfile();
+    autoSwitch.addEventListener('change', () => {
+      autoSwitchOn = autoSwitch.checked;
+      updateAutoLabel();
+      updateTechProfile();
+      autoAssignIfIdle();
+    });
+  }else{
+    updateTechProfile();
+  }
+
+  if(avatarButton){
+    avatarButton.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const expanded = avatarButton.getAttribute('aria-expanded') === 'true';
+      const next = !expanded;
+      avatarButton.setAttribute('aria-expanded', String(next));
+      if(avatarMenu){
+        avatarMenu.classList.toggle('open', next);
+        avatarMenu.setAttribute('aria-hidden', String(!next));
+        if(next){
+          const firstBtn = avatarMenu.querySelector('button');
+          firstBtn?.focus();
+        }
+      }
+    });
+  }
+
+  document.addEventListener('click', (ev) => {
+    if(!avatarMenu || !avatarMenu.classList.contains('open')) return;
+    if(avatarButton && (ev.target === avatarButton || avatarButton.contains(ev.target))) return;
+    if(avatarMenu.contains(ev.target)) return;
+    closeAvatarMenu();
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if(ev.key === 'Escape') closeAvatarMenu();
+  });
+
+  editNameMenu?.addEventListener('click', () => {
+    closeAvatarMenu();
+    techNameInput?.focus();
+    techNameInput?.select();
+  });
 
   // reforço autoplay
   video.muted = true;
@@ -195,8 +363,15 @@
     try{
       const r = await apiFetch(`/api/requests?status=queued`, { headers: { 'accept':'application/json' }});
       if(!r.ok) throw new Error('HTTP '+r.status);
-      const list = await r.json();
+      const list = await r.json() || [];
+      const prevLength = lastQueueList ? lastQueueList.length : 0;
+      if(Array.isArray(list) && list.length > prevLength && !autoSwitchOn){
+        queueEl?.classList.add('pulse-border');
+        setTimeout(()=> queueEl?.classList.remove('pulse-border'), 2000);
+      }
+      lastQueueList = Array.isArray(list) ? [...list] : [];
       renderQueue(list);
+      autoAssignIfIdle();
     }catch(e){
       console.debug('fetchQueue error', e);
     }
@@ -224,6 +399,24 @@
           <button class="btn primary"      type="button" data-act="accept" data-id="${it.requestId}">Aceitar</button>
         </div>`;
       queueEl.appendChild(div);
+    }
+  }
+
+  async function autoAssignIfIdle(){
+    if(!autoSwitchOn) return;
+    if(currentSessionId) return;
+    if(isAutoAccepting) return;
+    const first = lastQueueList && lastQueueList[0];
+    const requestId = first?.requestId;
+    if(requestId){
+      isAutoAccepting = true;
+      try{
+        await acceptRequest(requestId);
+      }catch(err){
+        console.warn('autoAssignIfIdle error', err);
+      }finally{
+        isAutoAccepting = false;
+      }
     }
   }
 
@@ -289,12 +482,6 @@
   fetchQueue();
 
   // ================== RTC / SIGNALING
-  let pc, socket, dc, transceiver;
-  let currentSessionId = null;
-
-  const earlyRemoteCandidates = [];
-  let remoteDescSet = false;
-
   function resetConnectionState(){
     remoteDescSet = false;
     earlyRemoteCandidates.length = 0;
@@ -310,6 +497,17 @@
 
   function setSessionLabel(id){ sessionLabel.textContent = id || '—'; }
   function sendDc(obj){ try{ if(dc && dc.readyState==='open') dc.send(JSON.stringify(obj)); }catch(e){} }
+
+  function onSessionEnded(message){
+    if(message) setStatus(message);
+    closeCurrent();
+    if(currentSessionId){
+      currentSessionId = null;
+      setSessionLabel('—');
+    }
+    autoAssignIfIdle();
+    updateTechProfile();
+  }
 
   function preferVp8(t){
     try{
@@ -429,7 +627,7 @@ function announce(room){
     socket.on('iceCandidate',  handleRemoteCandidate);
     socket.on('rtc-ice',       handleRemoteCandidate);
 
-    socket.on('peer-left', ()=> setStatus('Cliente encerrou o compartilhamento.'));
+    socket.on('peer-left', ()=> onSessionEnded('Cliente encerrou o compartilhamento.'));
     socket.on('connect_error', (e)=> setStatus('Socket erro: '+e.message));
     socket.on('disconnect', (r)=> console.debug('socket disconnect', r));
   }
@@ -441,21 +639,22 @@ function announce(room){
     currentSessionId = sessionId;
     setSessionLabel(sessionId);
     setStatus('Conectando…');
+    updateTechProfile();
 
     socket = io(API || undefined, { path:'/socket.io', transports:['websocket'], withCredentials:true });
-wireSocketHandlers();
+    wireSocketHandlers();
 
-// anuncia em vários formatos assim que conectar
-socket.on('connect', () => {
-  setStatus('Socket conectado');
-  announce(sessionId);
-});
+    // anuncia em vários formatos assim que conectar
+    socket.on('connect', () => {
+      setStatus('Socket conectado');
+      announce(sessionId);
+    });
 
-// alguns backends perguntam antes
-socket.on('ready?', () => announce(sessionId));
+    // alguns backends perguntam antes
+    socket.on('ready?', () => announce(sessionId));
 
-// e já tenta anunciar imediatamente também
-announce(sessionId);
+    // e já tenta anunciar imediatamente também
+    announce(sessionId);
 
     pc = new RTCPeerConnection({ iceServers: iceServers() });
 
@@ -463,7 +662,13 @@ announce(sessionId);
     preferVp8(transceiver);
 
     pc.oniceconnectionstatechange = ()=> setStatus(`ICE: ${pc.iceConnectionState}`);
-    pc.onconnectionstatechange = ()=> setStatus(`PC: ${pc.connectionState}`);
+    pc.onconnectionstatechange = ()=>{
+      const state = pc.connectionState;
+      setStatus(`PC: ${state}`);
+      if(['disconnected','failed','closed'].includes(state)){
+        onSessionEnded();
+      }
+    };
     pc.onsignalingstatechange = ()=> console.debug('signaling:', pc.signalingState);
 
     pc.ontrack = (e)=>{
@@ -503,7 +708,10 @@ announce(sessionId);
   qHigh.onclick = ()=> sendDc({ cmd:'quality', level:'high' });
   iceBtn.onclick   = ()=> sendDc({ cmd:'ice-restart' });
   statsBtn.onclick = ()=> sendDc({ cmd:'request-stats' });
-  stopBtn.onclick  = ()=> sendDc({ cmd:'stop' });
+  stopBtn.onclick  = ()=>{
+    sendDc({ cmd:'stop' });
+    onSessionEnded('Sessão encerrada.');
+  };
 
   manualJoin.onclick = ()=>{
     const id = manualRoom.value.trim();

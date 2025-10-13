@@ -37,18 +37,28 @@
       padding:.5rem .65rem; border:1px solid var(--line); border-radius:10px; flex:1 1 auto;
     }
     .small{font-size:.85rem}
-    .panel-title{margin:0 0 1rem 0; font-size:1.05rem; font-weight:600; white-space:nowrap}
-    .queue-header{display:flex; align-items:center; justify-content:space-between; gap:.75rem; margin-bottom:.25rem}
-    .queue-header h2{margin:0; font-size:1rem}
-    .queue-toggle{display:flex; align-items:center; gap:.45rem}
-    .queue-toggle .label{font-size:.8rem; color:var(--muted); white-space:nowrap}
+    .tech-header-wrap{position:relative; margin-bottom:.75rem}
+    .tech-header{display:flex; align-items:center; gap:.75rem}
+    .tech-header-texts{display:flex; flex-direction:column; gap:.15rem}
+    .tech-header-texts .name-row{display:flex; align-items:center; gap:.35rem}
+    .avatar-button{width:44px; height:44px; border-radius:999px; border:none; background:#e5e7eb; display:inline-flex; align-items:center; justify-content:center; font-weight:600; color:#111; cursor:pointer; position:relative; overflow:hidden; transition:transform .2s ease}
+    .avatar-button:hover{transform:scale(1.02)}
+    .avatar-button:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+    .avatar-button span{font-size:1rem}
+    .avatar-button img{width:100%; height:100%; object-fit:cover; display:none}
+    .avatar-button.has-photo img{display:block}
+    .avatar-button.has-photo span{display:none}
+    .avatar-menu{position:absolute; top:60px; left:0; background:var(--card); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px rgba(15,23,42,.16); padding:.35rem; min-width:160px; display:none; z-index:20}
+    .avatar-menu.open{display:block}
+    .avatar-menu button{width:100%; padding:.5rem .75rem; border:none; background:none; text-align:left; border-radius:8px; cursor:pointer; font:inherit; color:inherit}
+    .avatar-menu button:hover{background:#f3f4f6}
     .switch{position:relative; display:inline-block; width:46px; height:26px}
     .switch input{opacity:0; width:0; height:0}
     .slider{position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#e5e7eb; border-radius:999px; transition:.2s}
     .slider:before{content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s}
     .switch input:checked + .slider{background:#22C55E}
     .switch input:checked + .slider:before{transform:translateX(20px)}
-    #autoSwitchLabel{font-size:.8rem; color:var(--muted)}
+    #autoSwitchLabel{margin-top:.15rem}
     #autoSwitchLabel.on{color:#15803d; font-weight:600}
     .pulse-border{animation:pulse 2s ease-out 1}
     @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,203,25,.6);}100%{box-shadow:0 0 0 12px rgba(255,203,25,0);}}
@@ -58,19 +68,34 @@
   <div class="grid">
     <!-- ESQUERDA: FILA + PERFIL -->
     <aside class="card">
-      <h2 class="panel-title">Painel de Atendimentos</h2>
-
-      <div class="queue-header">
-        <h3 class="section-title" style="margin:0">Fila de chamados</h3>
-        <div class="queue-toggle">
-          <label class="switch" aria-label="Aceitar automaticamente">
-            <input id="autoSwitch" type="checkbox" />
-            <span class="slider"></span>
-          </label>
-          <span class="label" id="autoSwitchLabel">Aceitar automaticamente</span>
+      <div class="tech-header-wrap">
+        <div class="tech-header">
+          <button id="avatarButton" class="avatar-button" type="button" aria-haspopup="true" aria-expanded="false">
+            <img id="avatarImage" alt="" hidden>
+            <span id="avatarInitials">TX</span>
+          </button>
+          <div class="tech-header-texts">
+            <div class="name-row">
+              <strong id="techNameDisplay">Técnico</strong>
+              <span class="dot" title="online"></span>
+            </div>
+            <span class="muted small" id="techStatusLabel">Disponível</span>
+          </div>
+        </div>
+        <div id="avatarMenu" class="avatar-menu" role="menu" aria-hidden="true">
+          <button type="button" id="editNameMenu" role="menuitem">Alterar nome</button>
         </div>
       </div>
-      <p class="muted small" style="margin:.25rem 0 .75rem 0">Solicitações aguardando aceite.</p>
+
+      <div class="row" id="availabilityRow" style="margin-bottom:.25rem">
+        <label class="muted small" style="flex:1">Painel de Atendimentos</label>
+        <label class="switch">
+          <input id="autoSwitch" type="checkbox" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="small muted" id="autoSwitchLabel">ACEITAR CHAMADOS AUTOMATICAMENTE</div>
+      <p class="muted" style="margin:.75rem 0 .75rem 0">Solicitações aguardando aceite.</p>
 
       <!-- Perfil do técnico -->
       <div class="row" style="margin-bottom:.5rem">
@@ -201,7 +226,15 @@
   const iceBtn = qs('#ice'), statsBtn = qs('#stats'), stopBtn = qs('#stop');
   const autoSwitch = qs('#autoSwitch');
   const autoSwitchLabel = qs('#autoSwitchLabel');
+  const techNameDisplay = document.getElementById('techNameDisplay');
   const techStatusLabel = document.getElementById('techStatusLabel');
+  const avatarButton = document.getElementById('avatarButton');
+  const avatarImage = document.getElementById('avatarImage');
+  const avatarInitials = document.getElementById('avatarInitials');
+  const avatarMenu = document.getElementById('avatarMenu');
+  const editNameMenu = document.getElementById('editNameMenu');
+  const profileInfo = window.__profile || window.profile || {};
+  const photoUrl = profileInfo?.photoUrl || '';
 
   let autoSwitchOn = false;
   let isAutoAccepting = false;
@@ -211,7 +244,20 @@
   const earlyRemoteCandidates = [];
   let remoteDescSet = false;
 
+  function computeInitials(name){
+    if(!name) return 'TX';
+    const parts = String(name).trim().split(/\s+/).filter(Boolean);
+    if(!parts.length) return 'TX';
+    const first = parts[0]?.[0] ?? '';
+    const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? '') : '';
+    const combo = (first + last).toUpperCase();
+    if(combo.trim()) return combo;
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+
   function updateTechProfile(){
+    const displayName = techName || 'Técnico';
+    if(techNameDisplay) techNameDisplay.textContent = displayName;
     if(techStatusLabel){
       if(currentSessionId){
         techStatusLabel.textContent = 'Em atendimento';
@@ -219,12 +265,34 @@
         techStatusLabel.textContent = autoSwitchOn ? 'Aceitando automaticamente' : 'Disponível';
       }
     }
+    if(avatarInitials) avatarInitials.textContent = computeInitials(displayName);
+    if(photoUrl && avatarImage && avatarButton){
+      avatarImage.src = photoUrl;
+      avatarImage.alt = displayName;
+      avatarImage.hidden = false;
+      avatarButton.classList.add('has-photo');
+    }else if(avatarImage && avatarButton){
+      avatarImage.removeAttribute('src');
+      avatarImage.alt = '';
+      avatarImage.hidden = true;
+      avatarButton.classList.remove('has-photo');
+    }
   }
 
   function updateAutoLabel(){
     if(!autoSwitchLabel) return;
-    autoSwitchLabel.textContent = autoSwitchOn ? 'Aceitando automaticamente' : 'Aceitar automaticamente';
+    autoSwitchLabel.textContent = autoSwitchOn ? 'ACEITANDO AUTOMATICAMENTE' : 'ACEITAR CHAMADOS AUTOMATICAMENTE';
     autoSwitchLabel.classList.toggle('on', !!autoSwitchOn);
+  }
+
+  function closeAvatarMenu(){
+    if(avatarMenu){
+      avatarMenu.classList.remove('open');
+      avatarMenu.setAttribute('aria-hidden', 'true');
+    }
+    if(avatarButton){
+      avatarButton.setAttribute('aria-expanded', 'false');
+    }
   }
 
   if(autoSwitch){
@@ -241,6 +309,40 @@
   }else{
     updateTechProfile();
   }
+
+  if(avatarButton){
+    avatarButton.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const expanded = avatarButton.getAttribute('aria-expanded') === 'true';
+      const next = !expanded;
+      avatarButton.setAttribute('aria-expanded', String(next));
+      if(avatarMenu){
+        avatarMenu.classList.toggle('open', next);
+        avatarMenu.setAttribute('aria-hidden', String(!next));
+        if(next){
+          const firstBtn = avatarMenu.querySelector('button');
+          firstBtn?.focus();
+        }
+      }
+    });
+  }
+
+  document.addEventListener('click', (ev) => {
+    if(!avatarMenu || !avatarMenu.classList.contains('open')) return;
+    if(avatarButton && (ev.target === avatarButton || avatarButton.contains(ev.target))) return;
+    if(avatarMenu.contains(ev.target)) return;
+    closeAvatarMenu();
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if(ev.key === 'Escape') closeAvatarMenu();
+  });
+
+  editNameMenu?.addEventListener('click', () => {
+    closeAvatarMenu();
+    techNameInput?.focus();
+    techNameInput?.select();
+  });
 
   // reforço autoplay
   video.muted = true;
@@ -487,6 +589,22 @@ function announce(room){
   // alguns backends escutam pelo nome da sala
   socket.emit(room, { t:'tech-joined', ...payload });
 }
+    // NOVO: pedir ao app para enviar a SDP offer (falamos vários "dialetos")
+function requestOffer() {
+  const base = { room: currentSessionId, session: currentSessionId, sessionId: currentSessionId, techName, role:'tech' };
+
+  // eventos que diferentes apps/servidores costumam escutar
+  const evs = [
+    'need-offer','request-offer','send-offer','create-offer','offer?','rtc-offer?','sdp-offer?',
+    'call','call-me','start','start-rtc','start-share','viewer-ready','watcher','ready-for-offer'
+  ];
+  evs.forEach(ev => socket.emit(ev, base));
+
+  // e também em canais genéricos/room
+  socket.emit('signal', { ...base, t:'need-offer' });
+  socket.emit('webrtc', { ...base, t:'need-offer' });
+  socket.emit(currentSessionId, { ...base, t:'need-offer' });
+}
     
   function wireSocketHandlers(){
     socket.onAny(onAnySocketEvent);
@@ -529,6 +647,18 @@ function announce(room){
     socket.on('peer-left', ()=> onSessionEnded('Cliente encerrou o compartilhamento.'));
     socket.on('connect_error', (e)=> setStatus('Socket erro: '+e.message));
     socket.on('disconnect', (r)=> console.debug('socket disconnect', r));
+    
+    // quando o app entra na sala, pedimos a offer
+socket.on('peer-joined', (info) => {
+  console.debug('peer-joined', info);
+  setStatus('Cliente entrou. Solicitando offer…');
+  requestOffer();
+});
+
+// alguns backends perguntam identidade antes de mandar a offer
+socket.on('who-are-you', () => announce(currentSessionId));
+socket.on('ready',        () => requestOffer());
+socket.on('peer-ready',   () => requestOffer());
   }
 
   async function startSession(sessionId){
@@ -543,11 +673,14 @@ function announce(room){
     socket = io(API || undefined, { path:'/socket.io', transports:['websocket'], withCredentials:true });
     wireSocketHandlers();
 
-    // anuncia em vários formatos assim que conectar
-    socket.on('connect', () => {
-      setStatus('Socket conectado');
-      announce(sessionId);
-    });
+// anuncia em vários formatos assim que conectar
+socket.on('connect', () => {
+  setStatus('Socket conectado');
+  announce(sessionId);      // nos apresentamos (join, tech-hello, etc.)
+  requestOffer();           // e já pedimos a offer
+  // retry rápido caso o app demore um pouco para preparar a offer
+  setTimeout(requestOffer, 500);
+});
 
     // alguns backends perguntam antes
     socket.on('ready?', () => announce(sessionId));

@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Suporte X — Painel de Atendimentos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/central.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="/icon-192.png" alt="Logo Suporte X" />
+          <div>
+            <h1>Painel de Atendimentos</h1>
+            <span>Operações em tempo real</span>
+          </div>
+        </div>
+        <div class="tech-identity">
+          <button class="avatar-button" type="button" aria-label="Abrir menu do perfil">
+            <span>IX</span>
+          </button>
+          <div>
+            <strong>Isac Xavier</strong>
+            <div class="muted small">Em atendimento agora</div>
+          </div>
+        </div>
+        <div class="availability-control">
+          <div class="row" id="availabilityRow">
+            <label class="muted small" style="flex: 1;">Painel de Atendimentos</label>
+            <label class="switch">
+              <input id="autoSwitch" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="small muted" id="autoSwitchLabel">ACEITAR CHAMADOS AUTOMATICAMENTE</div>
+        </div>
+        <button class="primary-btn">Entrar na fila disponível</button>
+        <div>
+          <div class="section-title">Fila de chamados</div>
+          <div class="queue-list" id="queue">
+            <article class="ticket">
+              <div class="ticket-header">
+                <span class="ticket-title">#9241 • Ana Souza</span>
+                <span class="badge warning">SLA 08:21</span>
+              </div>
+              <div class="ticket-body">
+                <div class="badge dot">Plano Premium</div>
+              </div>
+              <div class="ticket-footer">
+                <span>Galaxy S22 • Android 14</span>
+                <span>3 min em espera</span>
+              </div>
+              <div class="ticket-actions">
+                <button class="tag-btn">Aceitar</button>
+                <button class="tag-btn">Transferir</button>
+                <button class="tag-btn">Mensagem inicial</button>
+              </div>
+            </article>
+            <article class="ticket">
+              <div class="ticket-header">
+                <span class="ticket-title">#9239 • João Pedro</span>
+                <span class="badge success">SLA 18:43</span>
+              </div>
+              <div class="ticket-body">
+                <div class="badge dot">Plano Essencial</div>
+              </div>
+              <div class="ticket-footer">
+                <span>Motorola G60 • Android 13</span>
+                <span>7 min em espera</span>
+              </div>
+              <div class="ticket-actions">
+                <button class="tag-btn">Aceitar</button>
+                <button class="tag-btn">Prioridade</button>
+                <button class="tag-btn">Encaminhar</button>
+              </div>
+            </article>
+            <article class="ticket">
+              <div class="ticket-header">
+                <span class="ticket-title">#9235 • Juliana Costa</span>
+                <span class="badge danger">SLA 02:14</span>
+              </div>
+              <div class="ticket-body">
+                <div class="badge dot">Plano Enterprise</div>
+              </div>
+              <div class="ticket-footer">
+                <span>Redmi Note 11 • Android 12</span>
+                <span>12 min em espera</span>
+              </div>
+              <div class="ticket-actions">
+                <button class="tag-btn">Retomar</button>
+                <button class="tag-btn">Marcar urgência</button>
+              </div>
+            </article>
+          </div>
+        </div>
+        <div>
+          <div class="section-title">Filtros rápidos</div>
+          <div class="ticket-actions">
+            <button class="tag-btn">Padrão</button>
+            <button class="tag-btn">SLA crítico</button>
+            <button class="tag-btn">Chamadas</button>
+          </div>
+        </div>
+      </aside>
+      <div class="content">
+        <header class="topbar">
+          <div class="topbar-left">
+            <div class="status-pill">
+              <span class="status-indicator" aria-hidden="true"></span>
+              Disponível • Técnica nível 2
+            </div>
+            <div>
+              <div class="section-title" style="margin: 0;">Sessões ativas</div>
+              <strong>2 em andamento</strong>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <button class="theme-switch" id="themeSwitch" type="button">Tema claro</button>
+            <button class="icon-btn" type="button" aria-label="Notificações">
+              🔔
+            </button>
+            <div class="profile-chip">
+              <div class="profile-avatar">IX</div>
+              <div>
+                <strong>Isac Xavier</strong>
+                <div class="section-title" style="margin: 0; font-size: 11px;">Supervisor</div>
+              </div>
+            </div>
+          </div>
+        </header>
+        <main class="dashboard">
+          <section class="cards-grid">
+            <article class="metric-card">
+              <span class="metric-label">Atendimentos hoje</span>
+              <span class="metric-value">18</span>
+              <span class="metric-trend">+12% vs. ontem</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">FCR (Primeiro contato)</span>
+              <span class="metric-value">86%</span>
+              <span class="metric-trend">+8 pts</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">NPS</span>
+              <span class="metric-value">74</span>
+              <span class="metric-trend">Meta atingida</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Tempo médio</span>
+              <span class="metric-value">07:12</span>
+              <span class="metric-trend negative">-25% • últimos 7 dias</span>
+            </article>
+          </section>
+
+          <section class="session-area">
+            <aside class="panel">
+              <div class="panel-header">
+                <h2>Contexto do dispositivo</h2>
+              </div>
+              <div class="panel-body">
+                <div class="context-grid">
+                  <div class="context-item">
+                    <strong>Aparelho</strong>
+                    <span>Galaxy S22 • Android 14 • App 2.3.1</span>
+                  </div>
+                  <div class="context-item">
+                    <strong>Identificação</strong>
+                    <span>Ana Souza • Cliente desde 2021</span>
+                  </div>
+                  <div class="context-item">
+                    <strong>Rede atual</strong>
+                    <span>Wi-Fi (−58 dBm) • Latência 74 ms</span>
+                  </div>
+                  <div class="context-item">
+                    <strong>Saúde do dispositivo</strong>
+                    <span>CPU 48% • RAM 2.1 GB livre • Bateria 62% (34°C)</span>
+                  </div>
+                  <div class="context-item">
+                    <strong>Permissões críticas</strong>
+                    <span>Screen share ✅ • Microfone ✅ • AccessibilityService ⚠️</span>
+                  </div>
+                </div>
+                <div>
+                  <div class="section-title">Timeline</div>
+                  <div class="timeline">
+                    <div class="timeline-entry">17:18 • Cliente entrou na fila</div>
+                    <div class="timeline-entry">17:21 • Consentimento LGPD validado</div>
+                    <div class="timeline-entry">17:22 • Compartilhamento de tela iniciado</div>
+                    <div class="timeline-entry">17:24 • Acesso remoto solicitado</div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Sessão em andamento</h2>
+              </div>
+              <div class="panel-body" style="gap: 18px;">
+                <div class="video-shell">
+                  <div class="placeholder">Stream seguro • aguardando reconexão (00:18)</div>
+                  <div class="floating-controls">
+                    <button type="button">Reproduzir</button>
+                    <button type="button">Qualidade: Auto</button>
+                    <button type="button">Solicitar acesso remoto</button>
+                    <button type="button">Stats ao vivo</button>
+                  </div>
+                </div>
+                <div class="indicators">
+                  <div class="indicator">
+                    <strong>Rede do cliente</strong>
+                    <span>Wi-Fi • 42 Mbps</span>
+                  </div>
+                  <div class="indicator">
+                    <strong>Qualidade da sessão</strong>
+                    <span>Bitrate 2.6 Mbps • FPS 28</span>
+                  </div>
+                  <div class="indicator">
+                    <strong>Alertas</strong>
+                    <span>Perda de pacote 5% • Estável</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <aside class="panel">
+              <div class="panel-header">
+                <h2>Comunicação</h2>
+              </div>
+              <div class="panel-body chat-area">
+                <div class="chat-thread" aria-live="polite">
+                  <div class="message">17:19 • Ana: Olá, meu app não abre a câmera.</div>
+                  <div class="message self">17:20 • Isac: Vou te ajudar, Ana. Vamos iniciar o compartilhamento?</div>
+                  <div class="message">17:21 • Ana enviou um print (download)</div>
+                </div>
+                <div class="quick-replies">
+                  <button type="button">Enviar checklist LGPD</button>
+                  <button type="button">Solicitar permissão de acessibilidade</button>
+                  <button type="button">Avisar sobre encerramento</button>
+                </div>
+                <form class="chat-form" onsubmit="return false;">
+                  <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" />
+                  <button type="submit">Enviar</button>
+                </form>
+              </div>
+            </aside>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Encerramento</h2>
+            </div>
+            <div class="panel-body closure">
+              <label>
+                Resultado
+                <select>
+                  <option>Resolvido</option>
+                  <option>Parcial</option>
+                  <option>Transferido</option>
+                  <option>Cancelado</option>
+                </select>
+              </label>
+              <label>
+                Sintoma principal
+                <textarea rows="2" placeholder="Ex.: Câmera fecha ao abrir a leitura de QR Code"></textarea>
+              </label>
+              <label>
+                Solução aplicada
+                <textarea rows="3" placeholder="Ex.: Limpeza de cache + atualização do app pelo Play Store"></textarea>
+              </label>
+              <button class="primary-action" type="button">Encerrar suporte e disparar pesquisa</button>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+    <script>
+      const switcher = document.getElementById('themeSwitch');
+      switcher?.addEventListener('click', () => {
+        const body = document.body;
+        const light = body.getAttribute('data-theme') === 'light';
+        body.setAttribute('data-theme', light ? 'dark' : 'light');
+        switcher.textContent = light ? 'Tema claro' : 'Tema escuro';
+      });
+
+      const autoSwitch = document.getElementById('autoSwitch');
+      const autoSwitchLabel = document.getElementById('autoSwitchLabel');
+      autoSwitch?.addEventListener('change', () => {
+        const on = !!autoSwitch.checked;
+        if(autoSwitchLabel){
+          autoSwitchLabel.textContent = on ? 'ACEITANDO AUTOMATICAMENTE' : 'ACEITAR CHAMADOS AUTOMATICAMENTE';
+          autoSwitchLabel.classList.toggle('on', on);
+        }
+      });
+      if(autoSwitchLabel){
+        autoSwitchLabel.classList.toggle('on', !!autoSwitch?.checked);
+      }
+
+      const chatThread = document.querySelector('.chat-thread');
+      if(chatThread){
+        const scrollToBottom = () => {
+          chatThread.scrollTo({ top: chatThread.scrollHeight, behavior: 'smooth' });
+        };
+        let stickToBottom = true;
+        const tolerance = 16;
+        chatThread.addEventListener('scroll', () => {
+          const distance = chatThread.scrollTop + chatThread.clientHeight;
+          stickToBottom = distance >= chatThread.scrollHeight - tolerance;
+        });
+        const observer = new MutationObserver((mutations) => {
+          const added = mutations.some((m) => m.addedNodes.length);
+          if(added && stickToBottom){
+            scrollToBottom();
+          }
+        });
+        observer.observe(chatThread, { childList: true });
+        scrollToBottom();
+      }
+    </script>
+  </body>
+</html>

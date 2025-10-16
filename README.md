@@ -4,7 +4,7 @@
 
 ## Como funciona
 - `send.html` (no celular do cliente): usa `getDisplayMedia` para capturar a tela e envia via **WebRTC**.
-- `view.html` (no navegador do técnico): recebe o vídeo.
+- `central.html` (no navegador do técnico): painel unificado de atendimentos.
 - `server.js` (Node + Socket.IO): faz a **sinalização** (troca de SDP/ICE). O vídeo trafega P2P quando possível.
 
 ### Estrutura básica do projeto
@@ -12,7 +12,7 @@
 Se você nunca trabalhou com WebRTC ou Socket.IO, este repositório pode parecer confuso à primeira vista. A estrutura é
 intencionalmente enxuta:
 
-- `public/`: contém os arquivos estáticos servidos para navegador, incluindo `send.html` (cliente) e `view.html` (técnico).
+- `public/`: contém os arquivos estáticos servidos para navegador, incluindo `send.html` (cliente) e `central.html` (técnico).
 - `server.js`: cria um servidor Express + Socket.IO responsável apenas por intermediar a troca das mensagens de sinalização.
 - `package.json`: lista dependências (Express e Socket.IO) e scripts (`npm start`).
 
@@ -42,11 +42,11 @@ intencionalmente enxuta:
 - Envie a ele `https://SEU_DOMINIO/send.html`
 - Ele toca em **Gerar código** (ou você envia `?room=123456` pronto).
 - Ele toca em **Iniciar compartilhamento** e confirma **Iniciar agora**.
-- Você abre `https://SEU_DOMINIO/view.html?room=123456` e vê a tela.
+- Você abre `https://SEU_DOMINIO/central.html?room=123456` e vê a tela.
 
 ## TURN (opcional, recomendado)
 Em redes restritas, pode ser necessário um **TURN server** para garantir conexão.
-- Você pode instalar **coturn** num VPS e depois configurar as credenciais nas páginas `send.html` e `view.html` (função `iceServers()`).
+- Você pode instalar **coturn** num VPS e depois configurar as credenciais nas páginas `send.html` e `central.html` (função `iceServers()`).
 
 ## Limitações
 - **Sem controle remoto.** Apenas visualização (por segurança da plataforma).

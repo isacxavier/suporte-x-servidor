@@ -97,7 +97,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// ====== HTTP API (usada pelo view.html)
+// ====== HTTP API (usada pelo central.html)
 app.get('/api/requests', (req, res) => {
   const status = (req.query.status || '').toLowerCase();
   let list = Array.from(requests.values());

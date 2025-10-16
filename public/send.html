@@ -40,7 +40,7 @@
       if (roomFromURL) {
         roomInput.value = roomFromURL;
         rc.textContent = roomFromURL;
-        viewlink.textContent = location.origin + "/view.html?room=" + roomFromURL;
+        viewlink.textContent = location.origin + "/central.html?room=" + roomFromURL;
         viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
         startBtn.disabled = false;
       }
@@ -49,7 +49,7 @@
         const r = randomRoom();
         roomInput.value = r;
         rc.textContent = r;
-        viewlink.textContent = location.origin + "/view.html?room=" + r;
+        viewlink.textContent = location.origin + "/central.html?room=" + r;
         viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
         startBtn.disabled = false;
       };

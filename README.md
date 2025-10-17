@@ -36,7 +36,7 @@ intencionalmente enxuta:
 2. No Render, crie um **Web Service** conectado ao seu repositório.
 3. *Build Command:* `npm install`
 4. *Start Command:* `node server.js`
-5. Após o deploy, pegue a URL pública HTTPS (ex.: `https://suportex.onrender.com`).
+5. Após o deploy, pegue a URL pública HTTPS (ex.: `https://suportex.app`).
 
 ## Uso com o cliente
 - Envie a ele `https://SEU_DOMINIO/send.html`

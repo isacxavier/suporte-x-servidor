@@ -1,4 +1,4 @@
-# Suporte X QuickView (Web)
+# Suporte X (Web)
 
 **Objetivo:** compartilhar a tela do celular **(Android)** do cliente via navegador (Chrome) para que o técnico visualize em tempo real. Não há controle remoto, é **apenas visualização** (view-only). Não precisa instalar app — basta abrir um link e tocar em "Iniciar agora".
 

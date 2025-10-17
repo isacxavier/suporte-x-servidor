@@ -192,5 +192,5 @@ app.get('/api/sessions', (_req, res) => {
 
 // Start
 server.listen(PORT, () => {
-  console.log(`Suporte X QuickView signaling server running on :${PORT}`);
+  console.log(`Suporte X signaling server running on :${PORT}`);
 });

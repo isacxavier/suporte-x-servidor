@@ -1,17 +1,43 @@
 const path = require('path');
 const express = require('express');
 const http = require('http');
+const cors = require('cors');
 const { Server } = require('socket.io');
 const { customAlphabet } = require('nanoid');
 
 // ===== Básico
 const app = express();
 const server = http.createServer(app);
+const isProduction = process.env.NODE_ENV === 'production';
+const productionOrigins = ['https://suportex.app', 'https://www.suportex.app'];
+const corsOptions = isProduction
+  ? { origin: productionOrigins, credentials: true }
+  : { origin: true, credentials: true };
 const io = new Server(server, {
-  cors: { origin: '*' },
+  cors: isProduction
+    ? {
+        origin: productionOrigins,
+        methods: ['GET', 'POST'],
+        credentials: true,
+      }
+    : { origin: '*', methods: ['GET', 'POST'], credentials: true },
   allowEIO3: true, // compat com socket.io-client 2.x (Android)
 });
 const PORT = process.env.PORT || 3000;
+
+app.use(cors(corsOptions));
+
+const CANONICAL_HOST = 'suportex.app';
+app.use((req, res, next) => {
+  if (!isProduction) return next();
+  const host = req.headers.host;
+  if (!host) return next();
+  const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+  if (isLocal || host === CANONICAL_HOST) return next();
+
+  const target = `https://${CANONICAL_HOST}${req.originalUrl}`;
+  return res.redirect(301, target);
+});
 
 // ===== Anti-cache seletivo (HTML/JS/CSS)
 app.use(express.json());

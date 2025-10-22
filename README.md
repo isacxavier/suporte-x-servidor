@@ -1,57 +1,44 @@
-# Suporte X (Web)
+# Suporte X Monorepo
 
-**Objetivo:** compartilhar a tela do celular **(Android)** do cliente via navegador (Chrome) para que o técnico visualize em tempo real. Não há controle remoto, é **apenas visualização** (view-only). Não precisa instalar app — basta abrir um link e tocar em "Iniciar agora".
+Este repositório concentra tudo o que é necessário para as plataformas Android e Web do Suporte X, bem como o backend de sinalização e a documentação compartilhada.
 
-## Como funciona
-- `send.html` (no celular do cliente): usa `getDisplayMedia` para capturar a tela e envia via **WebRTC**.
-- `central.html` (no navegador do técnico): painel unificado de atendimentos.
-- `server.js` (Node + Socket.IO): faz a **sinalização** (troca de SDP/ICE). O vídeo trafega P2P quando possível.
+```
+suportex/
+├── android/   # projeto Android (appId com.suportex.app)
+├── web/       # painel "Central do Técnico" e assets WebRTC
+├── server/    # sinalização Socket.IO / backend Render
+└── docs/      # diagramas, decisões (ADR), manuais
+```
 
-### Estrutura básica do projeto
+Cada diretório é versionado de forma independente, mas permanece no mesmo repositório para simplificar a colaboração entre as equipes mobile e web.
 
-Se você nunca trabalhou com WebRTC ou Socket.IO, este repositório pode parecer confuso à primeira vista. A estrutura é
-intencionalmente enxuta:
+## Estrutura
 
-- `public/`: contém os arquivos estáticos servidos para navegador, incluindo `send.html` (cliente) e `central.html` (técnico).
-- `server.js`: cria um servidor Express + Socket.IO responsável apenas por intermediar a troca das mensagens de sinalização.
-- `package.json`: lista dependências (Express e Socket.IO) e scripts (`npm start`).
+### `android/`
+Espaço reservado para o aplicativo Android nativo. Adicione aqui o projeto do Android Studio (`app/`, `build.gradle`, etc.).
 
-> Não existe build front-end. O HTML/JS é carregado diretamente pelo navegador, o que facilita a leitura do código para quem
-> está começando. Abra os arquivos do diretório `public/` para entender a lógica passo a passo.
+### `web/`
+Contém os arquivos estáticos utilizados pelo painel web e pela captura de tela do cliente (`public/`). O HTML/JS continua leve e sem build steps para facilitar ajustes rápidos.
 
-> Em produção, **HTTPS** é obrigatório para `getDisplayMedia`. Ao hospedar no Render, Vercel, etc., você terá HTTPS automaticamente.
+### `server/`
+Servidor Node.js responsável pela sinalização WebRTC com Socket.IO. Ele serve os arquivos estáticos diretamente de `../web/public` e expõe a API usada pelo painel.
 
-## Rodando localmente (teste rápido)
-1. Instale o Node 18+.
-2. No terminal, dentro da pasta, rode:
-   ```bash
-   npm install
-   npm start
-   ```
-3. Acesse `http://localhost:3000` no seu PC.
-4. Para testar no celular na mesma rede, use o IP local do seu PC (ex.: `http://192.168.0.10:3000`). *OBS: sem HTTPS alguns celulares podem bloquear `getDisplayMedia`.*
+Para rodar localmente:
 
-## Hospedagem simples (Render.com)
-1. Crie um repositório no GitHub e envie estes arquivos.
-2. No Render, crie um **Web Service** conectado ao seu repositório.
-3. *Build Command:* `npm install`
-4. *Start Command:* `node server.js`
-5. Após o deploy, pegue a URL pública HTTPS (ex.: `https://suportex.app`).
+```bash
+cd server
+npm install
+npm start
+```
 
-## Uso com o cliente
-- Envie a ele `https://SEU_DOMINIO/send.html`
-- Ele toca em **Gerar código** (ou você envia `?room=123456` pronto).
-- Ele toca em **Iniciar compartilhamento** e confirma **Iniciar agora**.
-- Você abre `https://SEU_DOMINIO/central.html?room=123456` e vê a tela.
+O servidor roda em `http://localhost:3000`.
 
-## TURN (opcional, recomendado)
-Em redes restritas, pode ser necessário um **TURN server** para garantir conexão.
-- Você pode instalar **coturn** num VPS e depois configurar as credenciais nas páginas `send.html` e `central.html` (função `iceServers()`).
+### `docs/`
+Área para documentação compartilhada (diagramas, ADRs, manuais internos, etc.).
 
-## Limitações
-- **Sem controle remoto.** Apenas visualização (por segurança da plataforma).
-- O cliente **sempre** precisa tocar em "Iniciar agora".
-- iOS: o Safari mobile tem mais restrições; priorize Android (Chrome).
+## Próximos passos
+- [ ] Adicionar o projeto Android dentro de `android/`.
+- [ ] Evoluir o front-end em `web/` conforme necessário.
+- [ ] Documentar decisões relevantes em `docs/`.
 
-## Segurança
-- O stream não passa pelo servidor (só a sinalização). Quando possível, a mídia trafega P2P e é criptografada pelo WebRTC.
+Sinta-se à vontade para ajustar esta estrutura à medida que o projeto evoluir.

@@ -1,4 +1,14 @@
-node_modules/
+**/node_modules/
 .DS_Store
 npm-debug.log*
+
+# Android Studio
+.idea/
+android/.gradle/
+android/local.properties
+*.iml
+
+# macOS
+.AppleDouble
+.LSOverride
 

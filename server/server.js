@@ -24,6 +24,7 @@ const io = new Server(server, {
   allowEIO3: true, // compat com socket.io-client 2.x (Android)
 });
 const PORT = process.env.PORT || 3000;
+const WEB_STATIC_PATH = path.resolve(__dirname, '../web/public');
 
 app.use(cors(corsOptions));
 
@@ -41,7 +42,7 @@ app.use((req, res, next) => {
 
 // ===== Anti-cache seletivo (HTML/JS/CSS)
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'), {
+app.use(express.static(WEB_STATIC_PATH, {
   setHeaders: (res, filePath) => {
     const lower = filePath.toLowerCase();
     if (lower.endsWith('.html') || lower.endsWith('.js') || lower.endsWith('.css')) {

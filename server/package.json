@@ -1,5 +1,5 @@
 {
-  "name": "suporte-x-quickview-server",
+  "name": "suporte-x-servidor",
   "version": "1.0.0",
   "description": "Screen-share (view-only) with WebRTC + Socket.IO. Sender (Android browser) shares screen via getDisplayMedia; viewer watches in a browser.",
   "main": "server.js",

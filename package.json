@@ -1,0 +1,13 @@
+{
+  "name": "suporte-x-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "npm --prefix server install",
+    "start": "npm --prefix server run start",
+    "dev": "npm --prefix server run dev"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

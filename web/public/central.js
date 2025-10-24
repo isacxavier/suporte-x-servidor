@@ -3,6 +3,15 @@ const state = {
   sessions: [],
   metrics: null,
   selectedSessionId: null,
+  joinedSessionId: null,
+  chatBySession: new Map(),
+  telemetryBySession: new Map(),
+  renderedChatSessionId: null,
+  commandState: {
+    shareActive: false,
+    remoteActive: false,
+    callActive: false,
+  },
 };
 
 const dom = {
@@ -39,6 +48,10 @@ const dom = {
   chatForm: document.getElementById('chatForm'),
   chatInput: document.getElementById('chatInput'),
   quickReplies: document.querySelectorAll('.quick-replies button[data-reply]'),
+  controlStart: document.getElementById('controlStart'),
+  controlQuality: document.getElementById('controlQuality'),
+  controlRemote: document.getElementById('controlRemote'),
+  controlStats: document.getElementById('controlStats'),
   closureForm: document.getElementById('closureForm'),
   closureOutcome: document.getElementById('closureOutcome'),
   closureSymptom: document.getElementById('closureSymptom'),
@@ -48,7 +61,226 @@ const dom = {
   closureSubmit: document.getElementById('closureSubmit'),
 };
 
-const socket = window.io ? window.io({ transports: ['websocket', 'polling'] }) : null;
+const SOCKET_URL = window.location.origin;
+const socket = window.io ? window.io(SOCKET_URL, { transports: ['websocket'], withCredentials: true }) : null;
+
+const ensureChatStore = (sessionId) => {
+  if (!sessionId) return [];
+  if (!state.chatBySession.has(sessionId)) {
+    state.chatBySession.set(sessionId, []);
+  }
+  return state.chatBySession.get(sessionId);
+};
+
+const syncSessionStores = (session) => {
+  if (!session || !session.sessionId) return;
+  const { sessionId } = session;
+  const chatLog = Array.isArray(session.chatLog)
+    ? session.chatLog
+    : Array.isArray(session.extra?.chatLog)
+      ? session.extra.chatLog
+      : [];
+  if (chatLog.length) {
+    const normalized = chatLog
+      .map((entry) => ({
+        id: entry.id || `${sessionId}-${entry.ts || Date.now()}`,
+        from: entry.from || 'client',
+        text: entry.text || '',
+        ts: entry.ts || Date.now(),
+      }))
+      .sort((a, b) => a.ts - b.ts);
+    state.chatBySession.set(sessionId, normalized);
+  } else {
+    state.chatBySession.set(sessionId, []);
+  }
+
+  const telemetrySource =
+    (typeof session.telemetry === 'object' && session.telemetry !== null && session.telemetry) ||
+    (typeof session.extra?.telemetry === 'object' && session.extra.telemetry !== null ? session.extra.telemetry : null);
+  if (telemetrySource) {
+    state.telemetryBySession.set(sessionId, { ...telemetrySource });
+  } else {
+    state.telemetryBySession.delete(sessionId);
+  }
+};
+
+const pushChatToStore = (sessionId, message) => {
+  if (!sessionId || !message) return;
+  const bucket = ensureChatStore(sessionId);
+  if (bucket.some((entry) => entry.id === message.id)) return;
+  bucket.push(message);
+  if (bucket.length > 50) bucket.splice(0, bucket.length - 50);
+  state.chatBySession.set(sessionId, bucket.sort((a, b) => a.ts - b.ts));
+};
+
+const getTelemetryForSession = (sessionId) => {
+  if (!sessionId) return null;
+  return state.telemetryBySession.get(sessionId) || null;
+};
+
+const resetCommandState = () => {
+  state.commandState = {
+    shareActive: false,
+    remoteActive: false,
+    callActive: false,
+  };
+  if (dom.controlStart) dom.controlStart.textContent = 'Solicitar visualização';
+  if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
+  if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
+};
+
+const renderChatForSession = () => {
+  if (!dom.chatThread) return;
+  const session = getSelectedSession();
+  if (!session) {
+    if (state.renderedChatSessionId !== null) {
+      dom.chatThread.innerHTML = '';
+      state.renderedChatSessionId = null;
+      addChatMessage({ author: 'Sistema', text: 'Selecione uma sessão para conversar com o cliente.', kind: 'system' });
+    }
+    return;
+  }
+
+  if (state.renderedChatSessionId === session.sessionId) return;
+  dom.chatThread.innerHTML = '';
+  const history = state.chatBySession.get(session.sessionId) || [];
+  if (!history.length) {
+    addChatMessage({
+      author: 'Sistema',
+      text: 'Sem mensagens trocadas ainda nesta sessão.',
+      kind: 'system',
+    });
+  } else {
+    history.forEach((msg) => {
+      const isTech = msg.from === 'tech';
+      addChatMessage({
+        author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session.clientName || msg.from,
+        text: msg.text,
+        kind: isTech ? 'self' : 'client',
+        ts: msg.ts,
+      });
+    });
+  }
+  state.renderedChatSessionId = session.sessionId;
+};
+
+const joinSelectedSession = () => {
+  if (!socket || !getSelectedSession()) return;
+  const sessionId = state.selectedSessionId;
+  if (!sessionId || state.joinedSessionId === sessionId) return;
+  socket.emit('session:join', { sessionId, role: 'tech' }, (ack) => {
+    if (ack?.ok) {
+      state.joinedSessionId = sessionId;
+      addChatMessage({
+        author: 'Sistema',
+        text: `Entrou na sala da sessão ${sessionId}.`,
+        kind: 'system',
+      });
+      renderChatForSession();
+    } else {
+      addChatMessage({
+        author: 'Sistema',
+        text: `Falha ao entrar na sessão ${sessionId}: ${ack?.err || 'erro desconhecido'}.`,
+        kind: 'system',
+      });
+    }
+  });
+};
+
+const sendChatMessage = (text) => {
+  const session = getSelectedSession();
+  if (!session) {
+    addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada.', kind: 'system' });
+    return;
+  }
+  if (!socket || socket.disconnected) {
+    addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
+    return;
+  }
+  const payload = { sessionId: session.sessionId, from: 'tech', text };
+  socket.emit('session:chat:send', payload, (ack) => {
+    if (ack?.ok) {
+      if (dom.chatInput) dom.chatInput.value = '';
+    } else {
+      addChatMessage({
+        author: 'Sistema',
+        text: ack?.err ? `Não foi possível enviar a mensagem: ${ack.err}` : 'Não foi possível enviar a mensagem.',
+        kind: 'system',
+      });
+    }
+  });
+};
+
+const emitSessionCommand = (type, extra = {}, onSuccess) => {
+  const session = getSelectedSession();
+  if (!session) {
+    addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada para enviar comandos.', kind: 'system' });
+    return;
+  }
+  if (!socket || socket.disconnected) {
+    addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
+    return;
+  }
+  socket.emit('session:command', { sessionId: session.sessionId, type, ...extra }, (ack) => {
+    if (ack?.ok) {
+      if (typeof onSuccess === 'function') onSuccess();
+    } else {
+      addChatMessage({
+        author: 'Sistema',
+        text: ack?.err ? `Falha ao enviar comando (${ack.err}).` : 'Falha ao enviar comando.',
+        kind: 'system',
+      });
+    }
+  });
+};
+
+const bindSessionControls = () => {
+  if (dom.controlStart) {
+    dom.controlStart.addEventListener('click', () => {
+      const active = state.commandState.shareActive;
+      const nextType = active ? 'share_stop' : 'share_start';
+      emitSessionCommand(nextType, {}, () => {
+        state.commandState.shareActive = !active;
+        dom.controlStart.textContent = state.commandState.shareActive ? 'Encerrar visualização' : 'Solicitar visualização';
+      });
+    });
+  }
+
+  if (dom.controlRemote) {
+    dom.controlRemote.addEventListener('click', () => {
+      const active = state.commandState.remoteActive;
+      const nextType = active ? 'remote_disable' : 'remote_enable';
+      emitSessionCommand(nextType, {}, () => {
+        state.commandState.remoteActive = !active;
+        dom.controlRemote.textContent = state.commandState.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
+      });
+    });
+  }
+
+  if (dom.controlQuality) {
+    dom.controlQuality.addEventListener('click', () => {
+      const active = state.commandState.callActive;
+      const nextType = active ? 'call_end' : 'call_start';
+      emitSessionCommand(nextType, {}, () => {
+        state.commandState.callActive = !active;
+        dom.controlQuality.textContent = state.commandState.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
+      });
+    });
+  }
+
+  if (dom.controlStats) {
+    dom.controlStats.addEventListener('click', () => {
+      if (!state.commandState.callActive) {
+        addChatMessage({ author: 'Sistema', text: 'Nenhuma chamada em andamento para encerrar.', kind: 'system' });
+        return;
+      }
+      emitSessionCommand('call_end', {}, () => {
+        state.commandState.callActive = false;
+        if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
+      });
+    });
+  }
+};
 
 const formatTime = (timestamp) => {
   if (!timestamp) return '—';
@@ -93,14 +325,22 @@ const getSelectedSession = () => {
 };
 
 const selectDefaultSession = () => {
-  if (state.selectedSessionId) {
-    const exists = state.sessions.some((s) => s.sessionId === state.selectedSessionId);
+  const previous = state.selectedSessionId;
+  if (previous) {
+    const exists = state.sessions.some((s) => s.sessionId === previous);
     if (exists) return;
   }
   const active = state.sessions.find((s) => s.status === 'active');
   const fallback = state.sessions[0];
   const chosen = active || fallback || null;
   state.selectedSessionId = chosen ? chosen.sessionId : null;
+  if (previous !== state.selectedSessionId) {
+    if (state.joinedSessionId === previous) {
+      state.joinedSessionId = null;
+    }
+    state.renderedChatSessionId = null;
+    resetCommandState();
+  }
 };
 
 const renderQueue = () => {
@@ -212,21 +452,36 @@ const renderSessions = () => {
     dom.contextHealth.textContent = '—';
     dom.contextPermissions.textContent = '—';
     dom.sessionPlaceholder.textContent = 'Aguardando seleção de sessão';
+    renderChatForSession();
     return;
+  }
+
+  const telemetry = getTelemetryForSession(session.sessionId) || session.telemetry || session.extra?.telemetry || {};
+  if (typeof telemetry.shareActive === 'boolean' && dom.controlStart) {
+    state.commandState.shareActive = telemetry.shareActive;
+    dom.controlStart.textContent = telemetry.shareActive ? 'Encerrar visualização' : 'Solicitar visualização';
+  }
+  if (typeof telemetry.remoteActive === 'boolean' && dom.controlRemote) {
+    state.commandState.remoteActive = telemetry.remoteActive;
+    dom.controlRemote.textContent = telemetry.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
+  }
+  if (typeof telemetry.callActive === 'boolean' && dom.controlQuality) {
+    state.commandState.callActive = telemetry.callActive;
+    dom.controlQuality.textContent = telemetry.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
   }
 
   const deviceParts = [session.brand, session.model, session.osVersion ? `Android ${session.osVersion}` : null].filter(Boolean);
   dom.contextDevice.textContent = deviceParts.length ? deviceParts.join(' • ') : 'Dispositivo não informado';
   dom.contextIdentity.textContent = session.clientName ? `${session.clientName}` : 'Cliente';
-  dom.contextNetwork.textContent = session.extra?.network || 'Aguardando dados do app';
-  dom.contextHealth.textContent = session.extra?.health || 'Aguardando dados do app';
-  dom.contextPermissions.textContent = session.extra?.permissions || 'Sem registros';
+  dom.contextNetwork.textContent = telemetry.network || session.extra?.network || 'Aguardando dados do app';
+  dom.contextHealth.textContent = telemetry.health || session.extra?.health || 'Aguardando dados do app';
+  dom.contextPermissions.textContent = telemetry.permissions || session.extra?.permissions || 'Sem registros';
   dom.sessionPlaceholder.textContent = session.status === 'active'
     ? `Sessão ${session.sessionId} • aguardando conexão`
     : `Sessão ${session.sessionId} encerrada ${formatRelative(Date.now() - (session.closedAt || session.acceptedAt))}`;
-  dom.indicatorNetwork.textContent = session.extra?.network || (session.status === 'active' ? 'Aguardando telemetria do app' : 'Sessão encerrada');
+  dom.indicatorNetwork.textContent = telemetry.network || session.extra?.network || (session.status === 'active' ? 'Aguardando telemetria do app' : 'Sessão encerrada');
   dom.indicatorQuality.textContent = session.status === 'active' ? 'Online' : 'Finalizada';
-  dom.indicatorAlerts.textContent = session.status === 'active' ? 'Sem alertas' : 'Encerrada';
+  dom.indicatorAlerts.textContent = telemetry.alerts || session.extra?.alerts || (session.status === 'active' ? 'Sem alertas' : 'Encerrada');
 
   if (dom.contextTimeline) {
     dom.contextTimeline.innerHTML = '';
@@ -261,6 +516,9 @@ const renderSessions = () => {
     dom.closureNps.disabled = isClosed;
     dom.closureFcr.disabled = isClosed;
   }
+
+  renderChatForSession();
+  joinSelectedSession();
 };
 
 const renderMetrics = () => {
@@ -275,13 +533,13 @@ const renderMetrics = () => {
   dom.metricWait.textContent = state.metrics.averageWaitMs != null ? `Espera média ${formatDuration(state.metrics.averageWaitMs)}` : 'Espera média —';
 };
 
-const addChatMessage = ({ author, text, kind = 'client' }) => {
+const addChatMessage = ({ author, text, kind = 'client', ts = Date.now() }) => {
   if (!dom.chatThread || !text) return;
   const entry = document.createElement('div');
   entry.className = 'message';
   if (kind === 'self') entry.classList.add('self');
   if (kind === 'system') entry.classList.add('system');
-  entry.textContent = `${formatTime(Date.now())} • ${author}: ${text}`;
+  entry.textContent = `${formatTime(ts)} • ${author}: ${text}`;
   dom.chatThread.appendChild(entry);
   dom.chatThread.scrollTo({ top: dom.chatThread.scrollHeight, behavior: 'smooth' });
 };
@@ -328,6 +586,7 @@ const loadSessions = async () => {
     if (!res.ok) throw new Error('Erro ao carregar sessões');
     const data = await res.json();
     state.sessions = Array.isArray(data) ? data : [];
+    state.sessions.forEach(syncSessionStores);
     renderSessions();
   } catch (error) {
     console.error(error);
@@ -346,15 +605,16 @@ const loadMetrics = async () => {
 };
 
 const initChat = () => {
-  dom.chatThread.innerHTML = '';
-  addChatMessage({ author: 'Sistema', text: 'Painel conectado. Aguardando chamados.', kind: 'system' });
+  if (dom.chatThread) {
+    dom.chatThread.innerHTML = '';
+    addChatMessage({ author: 'Sistema', text: 'Painel conectado. Aguardando chamados.', kind: 'system' });
+  }
   if (dom.chatForm) {
     dom.chatForm.addEventListener('submit', (event) => {
       event.preventDefault();
       const text = dom.chatInput.value.trim();
       if (!text) return;
-      addChatMessage({ author: dom.techIdentity?.dataset?.techName || 'Você', text, kind: 'self' });
-      dom.chatInput.value = '';
+      sendChatMessage(text);
     });
   }
   dom.quickReplies.forEach((button) => {
@@ -416,6 +676,8 @@ const bindClosureForm = () => {
 
 const bootstrap = async () => {
   updateTechIdentity();
+  resetCommandState();
+  bindSessionControls();
   initChat();
   bindClosureForm();
   await Promise.all([loadQueue(), loadSessions(), loadMetrics()]);
@@ -424,6 +686,8 @@ const bootstrap = async () => {
 if (socket) {
   socket.on('connect', () => {
     addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
+    state.joinedSessionId = null;
+    joinSelectedSession();
   });
   socket.on('disconnect', () => {
     addChatMessage({ author: 'Sistema', text: 'Desconectado. Tentando reconectar…', kind: 'system' });
@@ -435,12 +699,92 @@ if (socket) {
   socket.on('session:updated', (session) => {
     const index = state.sessions.findIndex((s) => s.sessionId === session.sessionId);
     if (index >= 0) {
-      state.sessions[index] = { ...state.sessions[index], ...session };
+      state.sessions[index] = {
+        ...state.sessions[index],
+        ...session,
+        extra: { ...(state.sessions[index].extra || {}), ...(session.extra || {}) },
+      };
+      syncSessionStores(state.sessions[index]);
     } else {
       state.sessions.unshift(session);
+      syncSessionStores(session);
     }
     renderSessions();
     loadMetrics();
+  });
+  socket.on('session:chat:new', (message) => {
+    if (!message || !message.sessionId) return;
+    const normalized = {
+      id: message.id || `${message.sessionId}-${message.ts || Date.now()}`,
+      from: message.from || 'client',
+      text: message.text || '',
+      ts: message.ts || Date.now(),
+    };
+    pushChatToStore(message.sessionId, normalized);
+    const sessionIndex = state.sessions.findIndex((s) => s.sessionId === message.sessionId);
+    if (sessionIndex >= 0) {
+      const updatedLog = ensureChatStore(message.sessionId);
+      const existing = state.sessions[sessionIndex];
+      state.sessions[sessionIndex] = {
+        ...existing,
+        chatLog: updatedLog,
+        extra: { ...(existing.extra || {}), chatLog: updatedLog, lastMessageAt: normalized.ts },
+      };
+    }
+    if (state.renderedChatSessionId === message.sessionId) {
+      const session = state.sessions.find((s) => s.sessionId === message.sessionId);
+      const isTech = normalized.from === 'tech';
+      addChatMessage({
+        author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session?.clientName || normalized.from,
+        text: normalized.text,
+        kind: isTech ? 'self' : 'client',
+        ts: normalized.ts,
+      });
+    }
+  });
+  socket.on('session:command', (command) => {
+    if (!command || !command.sessionId) return;
+    const index = state.sessions.findIndex((s) => s.sessionId === command.sessionId);
+    if (index >= 0) {
+      const session = state.sessions[index];
+      const commandLog = Array.isArray(session.commandLog) ? [...session.commandLog] : [];
+      const entry = { ...command, id: command.id || `${command.sessionId}-${command.ts || Date.now()}` };
+      commandLog.push(entry);
+      state.sessions[index] = {
+        ...session,
+        commandLog,
+        extra: { ...(session.extra || {}), commandLog, lastCommand: entry },
+      };
+    }
+    if (state.selectedSessionId === command.sessionId) {
+      addChatMessage({
+        author: 'Sistema',
+        text: `Comando ${command.type} executado por ${command.by || 'desconhecido'}.`,
+        kind: 'system',
+        ts: command.ts || Date.now(),
+      });
+    }
+  });
+  socket.on('session:status', (status) => {
+    if (!status || !status.sessionId) return;
+    const ts = status.ts || Date.now();
+    const current = getTelemetryForSession(status.sessionId) || {};
+    const data = typeof status.data === 'object' && status.data !== null ? status.data : {};
+    const merged = { ...current, ...data, updatedAt: ts };
+    state.telemetryBySession.set(status.sessionId, merged);
+    const index = state.sessions.findIndex((s) => s.sessionId === status.sessionId);
+    if (index >= 0) {
+      const session = state.sessions[index];
+      const extra = { ...(session.extra || {}), telemetry: merged };
+      if (typeof data.network !== 'undefined') extra.network = data.network;
+      if (typeof data.health !== 'undefined') extra.health = data.health;
+      if (typeof data.permissions !== 'undefined') extra.permissions = data.permissions;
+      if (typeof data.alerts !== 'undefined') extra.alerts = data.alerts;
+      state.sessions[index] = { ...session, telemetry: merged, extra };
+    }
+    if (state.selectedSessionId === status.sessionId) {
+      renderSessions();
+    }
   });
 }
 

@@ -13,6 +13,17 @@ const ensureString = (value, fallback = '') => {
   return fallback;
 };
 
+const normalizeSessionId = (value) => {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, 64);
+};
+
+const respondAck = (ack, payload) => {
+  if (typeof ack === 'function') {
+    ack(payload);
+  }
+};
+
 // ===== Básico
 const app = express();
 const server = http.createServer(app);
@@ -108,6 +119,133 @@ io.on('connection', (socket) => {
     socket.to(room).emit('peer-joined', { role });
   });
 
+  socket.on('session:join', (payload = {}, ack) => {
+    const sessionId = normalizeSessionId(payload.sessionId);
+    if (!sessionId) {
+      return respondAck(ack, { ok: false, err: 'no-session' });
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return respondAck(ack, { ok: false, err: 'session-not-found' });
+    }
+
+    const room = `s:${sessionId}`;
+    socket.join(room);
+    if (!socket.data.sessionRoles) socket.data.sessionRoles = {};
+    if (payload.role) socket.data.sessionRoles[sessionId] = ensureString(payload.role, '');
+    respondAck(ack, { ok: true });
+  });
+
+  socket.on('session:chat:send', (msg = {}, ack) => {
+    const sessionId = normalizeSessionId(msg.sessionId);
+    const text = ensureString(msg.text || '', '').trim();
+    const from = ensureString(msg.from || '', '');
+    if (!sessionId || !text) {
+      return respondAck(ack, { ok: false, err: 'bad-payload' });
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return respondAck(ack, { ok: false, err: 'session-not-found' });
+    }
+
+    const room = `s:${sessionId}`;
+    const out = {
+      id: Date.now().toString(36),
+      sessionId,
+      from: from || 'unknown',
+      text,
+      ts: Date.now(),
+    };
+
+    io.to(room).emit('session:chat:new', out);
+
+    const log = Array.isArray(session.chatLog) ? session.chatLog : [];
+    log.push(out);
+    if (log.length > 50) log.splice(0, log.length - 50);
+    session.chatLog = log;
+    session.extra = session.extra || {};
+    session.extra.chatLog = log;
+    session.extra.lastMessageAt = out.ts;
+    sessions.set(sessionId, session);
+    io.emit('session:updated', session);
+
+    respondAck(ack, { ok: true });
+  });
+
+  socket.on('session:command', (cmd = {}, ack) => {
+    const sessionId = normalizeSessionId(cmd.sessionId);
+    const type = ensureString(cmd.type || '', '').trim();
+    if (!sessionId || !type) {
+      return respondAck(ack, { ok: false, err: 'bad-payload' });
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return respondAck(ack, { ok: false, err: 'session-not-found' });
+    }
+
+    const byRole = socket.data?.sessionRoles?.[sessionId];
+    const enriched = {
+      ...cmd,
+      sessionId,
+      type,
+      by: ensureString(cmd.by || byRole || socket.id, ''),
+      ts: Date.now(),
+    };
+
+    io.to(`s:${sessionId}`).emit('session:command', enriched);
+
+    const commandLog = Array.isArray(session.commandLog) ? session.commandLog : [];
+    commandLog.push(enriched);
+    if (commandLog.length > 50) commandLog.splice(0, commandLog.length - 50);
+    session.commandLog = commandLog;
+    session.extra = session.extra || {};
+    session.extra.commandLog = commandLog;
+    session.extra.lastCommand = enriched;
+    sessions.set(sessionId, session);
+    io.emit('session:updated', session);
+
+    respondAck(ack, { ok: true });
+  });
+
+  socket.on('session:telemetry', (payload = {}, ack) => {
+    const sessionId = normalizeSessionId(payload.sessionId);
+    if (!sessionId) {
+      return respondAck(ack, { ok: false, err: 'bad-payload' });
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return respondAck(ack, { ok: false, err: 'session-not-found' });
+    }
+
+    const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : {};
+    const ts = Date.now();
+    const status = {
+      sessionId,
+      from: ensureString(payload.from || '', ''),
+      data,
+      ts,
+    };
+
+    session.telemetry = { ...(session.telemetry || {}), ...data, updatedAt: ts };
+    session.extra = session.extra || {};
+    session.extra.telemetry = session.telemetry;
+    if (typeof data.network !== 'undefined') session.extra.network = ensureString(data.network, session.extra.network || '');
+    if (typeof data.health !== 'undefined') session.extra.health = ensureString(data.health, session.extra.health || '');
+    if (typeof data.permissions !== 'undefined')
+      session.extra.permissions = ensureString(data.permissions, session.extra.permissions || '');
+    if (typeof data.alerts !== 'undefined') session.extra.alerts = ensureString(data.alerts, session.extra.alerts || '');
+    sessions.set(sessionId, session);
+
+    io.to(`s:${sessionId}`).emit('session:status', status);
+    io.emit('session:updated', session);
+
+    respondAck(ack, { ok: true });
+  });
+
   socket.on('signal', (payload = {}) => {
     try {
       const room = payload.room || socket.data.room;
@@ -166,6 +304,11 @@ app.post('/api/requests/:id/accept', (req, res) => {
 
   const now = Date.now();
   const techName = (req.body && req.body.techName) ? ensureString(req.body.techName, 'Técnico') : 'Técnico';
+  const baseExtra = typeof r.extra === 'object' && r.extra !== null ? { ...r.extra } : {};
+  const chatLog = Array.isArray(baseExtra.chatLog) ? [...baseExtra.chatLog] : [];
+  const commandLog = Array.isArray(baseExtra.commandLog) ? [...baseExtra.commandLog] : [];
+  const telemetry =
+    typeof baseExtra.telemetry === 'object' && baseExtra.telemetry !== null ? { ...baseExtra.telemetry } : {};
   const session = {
     sessionId,
     requestId: id,
@@ -182,7 +325,10 @@ app.post('/api/requests/:id/accept', (req, res) => {
     waitTimeMs: now - r.createdAt,
     status: 'active',
     createdAt: now,
-    extra: r.extra || {}
+    extra: { ...baseExtra, chatLog, commandLog, telemetry },
+    chatLog,
+    commandLog,
+    telemetry,
   };
   sessions.set(sessionId, session);
 
@@ -233,6 +379,13 @@ app.get('/api/sessions', (_req, res) => {
     symptom: s.symptom || null,
     solution: s.solution || null,
     notes: s.notes || null,
+    chatLog: Array.isArray(s.chatLog) ? s.chatLog : Array.isArray(s.extra?.chatLog) ? s.extra.chatLog : [],
+    commandLog: Array.isArray(s.commandLog) ? s.commandLog : Array.isArray(s.extra?.commandLog) ? s.extra.commandLog : [],
+    telemetry: typeof s.telemetry === 'object' && s.telemetry !== null
+      ? s.telemetry
+      : typeof s.extra?.telemetry === 'object' && s.extra.telemetry !== null
+        ? s.extra.telemetry
+        : {},
     extra: s.extra || {}
   }));
   list.sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));

@@ -19,13 +19,13 @@
             <span>Operações em tempo real</span>
           </div>
         </div>
-        <div class="tech-identity">
+        <div class="tech-identity" data-tech-name="Isac Xavier">
           <button class="avatar-button" type="button" aria-label="Abrir menu do perfil">
-            <span>IX</span>
+            <span id="techInitials">IX</span>
           </button>
           <div>
-            <strong>Isac Xavier</strong>
-            <div class="muted small">Em atendimento agora</div>
+            <strong id="techName">Isac Xavier</strong>
+            <div class="muted small" id="techStatus">Aguardando chamados</div>
           </div>
         </div>
         <div class="availability-control">
@@ -41,61 +41,8 @@
         <button class="primary-btn">Entrar na fila disponível</button>
         <div>
           <div class="section-title">Fila de chamados</div>
-          <div class="queue-list" id="queue">
-            <article class="ticket">
-              <div class="ticket-header">
-                <span class="ticket-title">#9241 • Ana Souza</span>
-                <span class="badge warning">SLA 08:21</span>
-              </div>
-              <div class="ticket-body">
-                <div class="badge dot">Plano Premium</div>
-              </div>
-              <div class="ticket-footer">
-                <span>Galaxy S22 • Android 14</span>
-                <span>3 min em espera</span>
-              </div>
-              <div class="ticket-actions">
-                <button class="tag-btn">Aceitar</button>
-                <button class="tag-btn">Transferir</button>
-                <button class="tag-btn">Mensagem inicial</button>
-              </div>
-            </article>
-            <article class="ticket">
-              <div class="ticket-header">
-                <span class="ticket-title">#9239 • João Pedro</span>
-                <span class="badge success">SLA 18:43</span>
-              </div>
-              <div class="ticket-body">
-                <div class="badge dot">Plano Essencial</div>
-              </div>
-              <div class="ticket-footer">
-                <span>Motorola G60 • Android 13</span>
-                <span>7 min em espera</span>
-              </div>
-              <div class="ticket-actions">
-                <button class="tag-btn">Aceitar</button>
-                <button class="tag-btn">Prioridade</button>
-                <button class="tag-btn">Encaminhar</button>
-              </div>
-            </article>
-            <article class="ticket">
-              <div class="ticket-header">
-                <span class="ticket-title">#9235 • Juliana Costa</span>
-                <span class="badge danger">SLA 02:14</span>
-              </div>
-              <div class="ticket-body">
-                <div class="badge dot">Plano Enterprise</div>
-              </div>
-              <div class="ticket-footer">
-                <span>Redmi Note 11 • Android 12</span>
-                <span>12 min em espera</span>
-              </div>
-              <div class="ticket-actions">
-                <button class="tag-btn">Retomar</button>
-                <button class="tag-btn">Marcar urgência</button>
-              </div>
-            </article>
-          </div>
+          <div class="queue-list" id="queue" aria-live="polite"></div>
+          <div class="empty-state muted small" id="queueEmpty" hidden>Nenhum chamado aguardando atendimento.</div>
         </div>
         <div>
           <div class="section-title">Filtros rápidos</div>
@@ -111,11 +58,11 @@
           <div class="topbar-left">
             <div class="status-pill">
               <span class="status-indicator" aria-hidden="true"></span>
-              Disponível • Técnica nível 2
+              <span id="availabilityLabel">Disponível</span> • <span id="techRole">Técnica nível 2</span>
             </div>
             <div>
               <div class="section-title" style="margin: 0;">Sessões ativas</div>
-              <strong>2 em andamento</strong>
+              <strong id="activeSessionsLabel">0 em andamento</strong>
             </div>
           </div>
           <div class="topbar-actions">
@@ -126,33 +73,33 @@
             <div class="profile-chip">
               <div class="profile-avatar">IX</div>
               <div>
-                <strong>Isac Xavier</strong>
-                <div class="section-title" style="margin: 0; font-size: 11px;">Supervisor</div>
+                <strong id="topbarTechName">Isac Xavier</strong>
+                <div class="section-title" style="margin: 0; font-size: 11px;" id="techRoleSecondary">Supervisor</div>
               </div>
             </div>
           </div>
         </header>
         <main class="dashboard">
           <section class="cards-grid">
-            <article class="metric-card">
+            <article class="metric-card" id="metricAttendances">
               <span class="metric-label">Atendimentos hoje</span>
-              <span class="metric-value">18</span>
-              <span class="metric-trend">+12% vs. ontem</span>
+              <span class="metric-value" data-metric="attendances">0</span>
+              <span class="metric-trend" data-metric="queue">Fila atual: 0</span>
             </article>
-            <article class="metric-card">
+            <article class="metric-card" id="metricFcr">
               <span class="metric-label">FCR (Primeiro contato)</span>
-              <span class="metric-value">86%</span>
-              <span class="metric-trend">+8 pts</span>
+              <span class="metric-value" data-metric="fcr">—</span>
+              <span class="metric-trend" data-metric="fcr-detail">Aguardando dados</span>
             </article>
-            <article class="metric-card">
+            <article class="metric-card" id="metricNps">
               <span class="metric-label">NPS</span>
-              <span class="metric-value">74</span>
-              <span class="metric-trend">Meta atingida</span>
+              <span class="metric-value" data-metric="nps">—</span>
+              <span class="metric-trend" data-metric="nps-detail">Coletado ao encerrar</span>
             </article>
-            <article class="metric-card">
+            <article class="metric-card" id="metricHandleTime">
               <span class="metric-label">Tempo médio</span>
-              <span class="metric-value">07:12</span>
-              <span class="metric-trend negative">-25% • últimos 7 dias</span>
+              <span class="metric-value" data-metric="handle">—</span>
+              <span class="metric-trend" data-metric="wait">Espera média —</span>
             </article>
           </section>
 
@@ -165,32 +112,29 @@
                 <div class="context-grid">
                   <div class="context-item">
                     <strong>Aparelho</strong>
-                    <span>Galaxy S22 • Android 14 • App 2.3.1</span>
+                    <span id="contextDevice">—</span>
                   </div>
                   <div class="context-item">
                     <strong>Identificação</strong>
-                    <span>Ana Souza • Cliente desde 2021</span>
+                    <span id="contextIdentity">—</span>
                   </div>
                   <div class="context-item">
                     <strong>Rede atual</strong>
-                    <span>Wi-Fi (−58 dBm) • Latência 74 ms</span>
+                    <span id="contextNetwork">Aguardando dados do app</span>
                   </div>
                   <div class="context-item">
                     <strong>Saúde do dispositivo</strong>
-                    <span>CPU 48% • RAM 2.1 GB livre • Bateria 62% (34°C)</span>
+                    <span id="contextHealth">—</span>
                   </div>
                   <div class="context-item">
                     <strong>Permissões críticas</strong>
-                    <span>Screen share ✅ • Microfone ✅ • AccessibilityService ⚠️</span>
+                    <span id="contextPermissions">—</span>
                   </div>
                 </div>
                 <div>
                   <div class="section-title">Timeline</div>
-                  <div class="timeline">
-                    <div class="timeline-entry">17:18 • Cliente entrou na fila</div>
-                    <div class="timeline-entry">17:21 • Consentimento LGPD validado</div>
-                    <div class="timeline-entry">17:22 • Compartilhamento de tela iniciado</div>
-                    <div class="timeline-entry">17:24 • Acesso remoto solicitado</div>
+                  <div class="timeline" id="contextTimeline">
+                    <div class="timeline-entry">Sem eventos registrados ainda.</div>
                   </div>
                 </div>
               </div>
@@ -202,26 +146,26 @@
               </div>
               <div class="panel-body" style="gap: 18px;">
                 <div class="video-shell">
-                  <div class="placeholder">Stream seguro • aguardando reconexão (00:18)</div>
+                  <div class="placeholder" id="sessionPlaceholder">Aguardando seleção de sessão</div>
                   <div class="floating-controls">
-                    <button type="button">Reproduzir</button>
-                    <button type="button">Qualidade: Auto</button>
-                    <button type="button">Solicitar acesso remoto</button>
-                    <button type="button">Stats ao vivo</button>
+                    <button type="button" id="controlStart">Solicitar visualização</button>
+                    <button type="button" id="controlQuality">Qualidade: Auto</button>
+                    <button type="button" id="controlRemote">Solicitar acesso remoto</button>
+                    <button type="button" id="controlStats">Stats ao vivo</button>
                   </div>
                 </div>
                 <div class="indicators">
                   <div class="indicator">
                     <strong>Rede do cliente</strong>
-                    <span>Wi-Fi • 42 Mbps</span>
+                    <span id="indicatorNetwork">—</span>
                   </div>
                   <div class="indicator">
                     <strong>Qualidade da sessão</strong>
-                    <span>Bitrate 2.6 Mbps • FPS 28</span>
+                    <span id="indicatorQuality">—</span>
                   </div>
                   <div class="indicator">
                     <strong>Alertas</strong>
-                    <span>Perda de pacote 5% • Estável</span>
+                    <span id="indicatorAlerts">—</span>
                   </div>
                 </div>
               </div>
@@ -232,18 +176,15 @@
                 <h2>Comunicação</h2>
               </div>
               <div class="panel-body chat-area">
-                <div class="chat-thread" aria-live="polite">
-                  <div class="message">17:19 • Ana: Olá, meu app não abre a câmera.</div>
-                  <div class="message self">17:20 • Isac: Vou te ajudar, Ana. Vamos iniciar o compartilhamento?</div>
-                  <div class="message">17:21 • Ana enviou um print (download)</div>
+                <div class="chat-thread" aria-live="polite" id="chatThread">
                 </div>
                 <div class="quick-replies">
-                  <button type="button">Enviar checklist LGPD</button>
-                  <button type="button">Solicitar permissão de acessibilidade</button>
-                  <button type="button">Avisar sobre encerramento</button>
+                  <button type="button" data-reply="Olá, sou do Suporte X. Vou assumir o seu atendimento agora.">Enviar mensagem inicial</button>
+                  <button type="button" data-reply="Para continuar, preciso que libere o compartilhamento de tela nas configurações.">Solicitar permissão de acessibilidade</button>
+                  <button type="button" data-reply="Vou encerrar o atendimento por aqui. Qualquer novidade é só chamar!">Avisar sobre encerramento</button>
                 </div>
-                <form class="chat-form" onsubmit="return false;">
-                  <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" />
+                <form class="chat-form" id="chatForm">
+                  <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" id="chatInput" />
                   <button type="submit">Enviar</button>
                 </form>
               </div>
@@ -254,30 +195,43 @@
             <div class="panel-header">
               <h2>Encerramento</h2>
             </div>
-            <div class="panel-body closure">
+            <form class="panel-body closure" id="closureForm">
               <label>
                 Resultado
-                <select>
-                  <option>Resolvido</option>
-                  <option>Parcial</option>
-                  <option>Transferido</option>
-                  <option>Cancelado</option>
+                <select id="closureOutcome" required>
+                  <option value="resolved">Resolvido</option>
+                  <option value="partial">Parcial</option>
+                  <option value="transferred">Transferido</option>
+                  <option value="cancelled">Cancelado</option>
                 </select>
               </label>
               <label>
                 Sintoma principal
-                <textarea rows="2" placeholder="Ex.: Câmera fecha ao abrir a leitura de QR Code"></textarea>
+                <textarea rows="2" placeholder="Ex.: Câmera fecha ao abrir a leitura de QR Code" id="closureSymptom"></textarea>
               </label>
               <label>
                 Solução aplicada
-                <textarea rows="3" placeholder="Ex.: Limpeza de cache + atualização do app pelo Play Store"></textarea>
+                <textarea rows="3" placeholder="Ex.: Limpeza de cache + atualização do app pelo Play Store" id="closureSolution"></textarea>
               </label>
-              <button class="primary-action" type="button">Encerrar suporte e disparar pesquisa</button>
-            </div>
+              <div class="closure-grid">
+                <label>
+                  NPS (0-10)
+                  <input type="number" min="0" max="10" step="1" id="closureNps" />
+                </label>
+                <label class="checkbox">
+                  <input type="checkbox" id="closureFcr" />
+                  <span>Resolvido no primeiro contato</span>
+                </label>
+              </div>
+              <button class="primary-action" type="submit" id="closureSubmit">Encerrar suporte e disparar pesquisa</button>
+            </form>
           </section>
         </main>
       </div>
     </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/common.js"></script>
+    <script src="/central.js" type="module"></script>
     <script>
       const switcher = document.getElementById('themeSwitch');
       switcher?.addEventListener('click', () => {
@@ -300,26 +254,6 @@
         autoSwitchLabel.classList.toggle('on', !!autoSwitch?.checked);
       }
 
-      const chatThread = document.querySelector('.chat-thread');
-      if(chatThread){
-        const scrollToBottom = () => {
-          chatThread.scrollTo({ top: chatThread.scrollHeight, behavior: 'smooth' });
-        };
-        let stickToBottom = true;
-        const tolerance = 16;
-        chatThread.addEventListener('scroll', () => {
-          const distance = chatThread.scrollTop + chatThread.clientHeight;
-          stickToBottom = distance >= chatThread.scrollHeight - tolerance;
-        });
-        const observer = new MutationObserver((mutations) => {
-          const added = mutations.some((m) => m.addedNodes.length);
-          if(added && stickToBottom){
-            scrollToBottom();
-          }
-        });
-        observer.observe(chatThread, { childList: true });
-        scrollToBottom();
-      }
     </script>
   </body>
 </html>

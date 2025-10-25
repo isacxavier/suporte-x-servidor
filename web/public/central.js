@@ -1,9 +1,17 @@
+const SessionStates = Object.freeze({
+  IDLE: 'IDLE',
+  ACTIVE: 'ACTIVE',
+  ENDED: 'ENDED',
+});
+
 const state = {
   queue: [],
   sessions: [],
   metrics: null,
   selectedSessionId: null,
   joinedSessionId: null,
+  sessionState: SessionStates.IDLE,
+  activeSessionId: null,
   chatBySession: new Map(),
   telemetryBySession: new Map(),
   renderedChatSessionId: null,
@@ -96,6 +104,38 @@ const TIMELINE_RENDER_LIMIT = 80;
 
 const pendingRenderJobs = [];
 let pendingRafId = null;
+
+function setSessionState(nextState, sessionId = null) {
+  if (!Object.values(SessionStates).includes(nextState)) return;
+  const changed = state.sessionState !== nextState || state.activeSessionId !== sessionId;
+  state.sessionState = nextState;
+  state.activeSessionId = sessionId;
+  if (changed && document && document.body) {
+    document.body.dataset.sessionState = nextState;
+  }
+}
+
+function isSessionCurrent(sessionId) {
+  if (!sessionId) return false;
+  return (
+    state.activeSessionId === sessionId ||
+    state.joinedSessionId === sessionId ||
+    state.selectedSessionId === sessionId
+  );
+}
+
+function markSessionActive(sessionId) {
+  if (!sessionId) return;
+  setSessionState(SessionStates.ACTIVE, sessionId);
+}
+
+function markSessionEnded(sessionId, reason = 'peer_ended') {
+  if (!sessionId) return;
+  if (state.sessionState === SessionStates.IDLE) return;
+  if (!isSessionCurrent(sessionId)) return;
+  setSessionState(SessionStates.ENDED, sessionId);
+  resetDashboard({ sessionId, reason });
+}
 
 function scheduleRender(fn) {
   if (typeof fn !== 'function') return;
@@ -632,6 +672,7 @@ const joinSelectedSession = () => {
   if (state.joinedSessionId === sessionId) return;
   socket.emit('session:join', { sessionId, role: 'tech', userType: 'tech' }, (ack) => {
     if (ack?.ok) {
+      markSessionActive(sessionId);
       state.joinedSessionId = sessionId;
       state.media.sessionId = sessionId;
       addChatMessage({
@@ -760,6 +801,54 @@ function handleSessionEnded(sessionId, reason = 'peer_ended') {
   renderSessions();
 }
 
+function resetDashboard({ sessionId = null, reason = 'peer_ended' } = {}) {
+  const targetSessionId =
+    sessionId ||
+    state.activeSessionId ||
+    state.joinedSessionId ||
+    state.selectedSessionId ||
+    null;
+
+  cleanupSession({ rebindHandlers: true });
+
+  if (targetSessionId) {
+    state.chatBySession.delete(targetSessionId);
+    state.telemetryBySession.delete(targetSessionId);
+  }
+
+  state.selectedSessionId = null;
+
+  renderSessions();
+  renderChatForSession();
+  updateMediaDisplay();
+
+  if (dom.closureForm) {
+    dom.closureForm.reset();
+  }
+
+  scheduleRender(() => {
+    if (dom.chatThread) {
+      const message =
+        reason === 'tech_ended'
+          ? 'Atendimento encerrado. Painel pronto para o próximo atendimento.'
+          : 'Painel pronto para o próximo atendimento.';
+      dom.chatThread.replaceChildren(
+        createChatEntryElement({
+          author: 'Sistema',
+          text: message,
+          kind: 'system',
+        })
+      );
+    }
+  });
+
+  setSessionState(SessionStates.IDLE, null);
+
+  Promise.all([loadQueue(), loadSessions(), loadMetrics()]).catch((error) => {
+    console.warn('Falha ao atualizar dados após reset', error);
+  });
+}
+
 function handleCommandEffects(command, { local = false } = {}) {
   if (!command) return;
   const by = command.by || (local ? 'tech' : 'unknown');
@@ -803,6 +892,7 @@ function handleCommandEffects(command, { local = false } = {}) {
       break;
     case 'session_end':
       handleSessionEnded(command.sessionId, command.reason || 'peer_ended');
+      markSessionEnded(command.sessionId, command.reason || 'peer_ended');
       break;
     default:
       break;
@@ -1335,6 +1425,7 @@ const bindClosureForm = () => {
 
 const bootstrap = async () => {
   updateTechIdentity();
+  setSessionState(SessionStates.IDLE, null);
   resetCommandState();
   bindSessionControls();
   initChat();
@@ -1409,10 +1500,29 @@ function handleSessionEndedEvent(payload) {
   if (!payload || !payload.sessionId) return;
   const reason = payload.reason || 'peer_ended';
   handleSessionEnded(payload.sessionId, reason);
-  if (state.joinedSessionId === payload.sessionId || state.media.sessionId === payload.sessionId) {
-    cleanupSession({ rebindHandlers: true });
-    renderSessions();
-  }
+  markSessionEnded(payload.sessionId, reason);
+}
+
+function handlePeerLeft() {
+  const sessionId = state.joinedSessionId || state.activeSessionId || state.selectedSessionId || null;
+  if (!sessionId) return;
+  addChatMessage({ author: 'Sistema', text: 'Cliente desconectou do atendimento.', kind: 'system' });
+  sendSessionCommand('session_end', { reason: 'peer_left' }, { silent: true, sessionId })
+    .then(({ session }) => {
+      registerCommand(
+        {
+          sessionId: session.sessionId,
+          type: 'session_end',
+          reason: 'peer_left',
+          by: 'tech',
+          ts: Date.now(),
+        },
+        { local: true }
+      );
+    })
+    .catch(() => {});
+  handleSessionEnded(sessionId, 'peer_left');
+  markSessionEnded(sessionId, 'peer_left');
 }
 
 async function handleSignalOffer({ sessionId, sdp }) {
@@ -1466,6 +1576,7 @@ function setupSocketHandlers() {
   registerSocketHandler('session:command', handleSessionCommandEvent);
   registerSocketHandler('session:status', handleSessionStatus);
   registerSocketHandler('session:ended', handleSessionEndedEvent);
+  registerSocketHandler('peer-left', handlePeerLeft);
   registerSocketHandler('signal:offer', handleSignalOffer);
   registerSocketHandler('signal:answer', handleSignalAnswer);
   registerSocketHandler('signal:candidate', handleSignalCandidate);
@@ -1489,6 +1600,7 @@ function cleanupSession({ rebindHandlers = false } = {}) {
   cancelScheduledRenders();
   teardownPeerConnection();
   resetCommandState();
+  setSessionState(SessionStates.IDLE, null);
   state.joinedSessionId = null;
   state.media.sessionId = null;
   state.renderedChatSessionId = null;

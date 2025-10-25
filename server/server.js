@@ -80,7 +80,11 @@ const requests = new Map(); // requestId -> { requestId, clientId, clientName, b
 const sessions = new Map(); // sessionId -> { sessionId, requestId, clientId, techName?, clientName, brand, model, requestedAt, acceptedAt, waitTimeMs, status, closedAt?, outcome?, firstContactResolution?, npsScore?, symptom?, solution?, handleTimeMs? }
 
 // ====== SOCKETS
+const connectionIndex = new Map();
+
 io.on('connection', (socket) => {
+  connectionIndex.set(socket.id, { socketId: socket.id, userType: 'unknown', sessionId: null });
+
   // 1) CLIENTE cria um pedido de suporte (fila real)
   // payload: { clientName?, brand?, model? }
   socket.on('support:request', (payload = {}) => {
@@ -130,10 +134,15 @@ io.on('connection', (socket) => {
       return respondAck(ack, { ok: false, err: 'session-not-found' });
     }
 
+    const userTypeRaw = ensureString(payload.userType || payload.role || '', '').toLowerCase();
+    const userType = userTypeRaw === 'tech' || userTypeRaw === 'client' ? userTypeRaw : 'unknown';
     const room = `s:${sessionId}`;
     socket.join(room);
     if (!socket.data.sessionRoles) socket.data.sessionRoles = {};
-    if (payload.role) socket.data.sessionRoles[sessionId] = ensureString(payload.role, '');
+    socket.data.sessionRoles[sessionId] = userType;
+    socket.data.sessionId = sessionId;
+    socket.data.userType = userType;
+    connectionIndex.set(socket.id, { socketId: socket.id, userType, sessionId });
     respondAck(ack, { ok: true });
   });
 
@@ -151,15 +160,17 @@ io.on('connection', (socket) => {
     }
 
     const room = `s:${sessionId}`;
+    const providedId = ensureString(msg.id || '', '');
+    const ts = typeof msg.ts === 'number' ? msg.ts : Date.now();
     const out = {
-      id: Date.now().toString(36),
+      id: providedId || Date.now().toString(36),
       sessionId,
       from: from || 'unknown',
       text,
-      ts: Date.now(),
+      ts,
     };
 
-    io.to(room).emit('session:chat:new', out);
+    socket.to(room).emit('session:chat:new', out);
 
     const log = Array.isArray(session.chatLog) ? session.chatLog : [];
     log.push(out);
@@ -171,7 +182,7 @@ io.on('connection', (socket) => {
     sessions.set(sessionId, session);
     io.emit('session:updated', session);
 
-    respondAck(ack, { ok: true });
+    respondAck(ack, { ok: true, id: out.id });
   });
 
   socket.on('session:command', (cmd = {}, ack) => {
@@ -187,15 +198,17 @@ io.on('connection', (socket) => {
     }
 
     const byRole = socket.data?.sessionRoles?.[sessionId];
+    const ts = Date.now();
     const enriched = {
-      ...cmd,
       sessionId,
       type,
+      data: cmd.data || null,
       by: ensureString(cmd.by || byRole || socket.id, ''),
-      ts: Date.now(),
+      ts,
     };
 
-    io.to(`s:${sessionId}`).emit('session:command', enriched);
+    const room = `s:${sessionId}`;
+    socket.to(room).emit('session:command', enriched);
 
     const commandLog = Array.isArray(session.commandLog) ? session.commandLog : [];
     commandLog.push(enriched);
@@ -204,6 +217,48 @@ io.on('connection', (socket) => {
     session.extra = session.extra || {};
     session.extra.commandLog = commandLog;
     session.extra.lastCommand = enriched;
+
+    session.telemetry = session.telemetry || {};
+    const updateTelemetryFlag = (flag, value) => {
+      session.telemetry[flag] = value;
+      session.extra[flag] = value;
+    };
+
+    switch (type) {
+      case 'share_start':
+        updateTelemetryFlag('shareActive', true);
+        break;
+      case 'share_stop':
+        updateTelemetryFlag('shareActive', false);
+        break;
+      case 'remote_enable':
+        updateTelemetryFlag('remoteActive', true);
+        break;
+      case 'remote_disable':
+        updateTelemetryFlag('remoteActive', false);
+        break;
+      case 'call_start':
+        updateTelemetryFlag('callActive', true);
+        break;
+      case 'call_end':
+        updateTelemetryFlag('callActive', false);
+        break;
+      case 'session_end': {
+        session.status = 'closed';
+        session.closedAt = ts;
+        session.handleTimeMs = ts - (session.acceptedAt || session.createdAt || ts);
+        session.outcome = session.outcome || 'peer_ended';
+        updateTelemetryFlag('shareActive', false);
+        updateTelemetryFlag('callActive', false);
+        updateTelemetryFlag('remoteActive', false);
+        io.to(room).emit('session:ended', { sessionId, reason: 'peer_ended' });
+        io.socketsLeave(room);
+        break;
+      }
+      default:
+        break;
+    }
+
     sessions.set(sessionId, session);
     io.emit('session:updated', session);
 
@@ -246,20 +301,23 @@ io.on('connection', (socket) => {
     respondAck(ack, { ok: true });
   });
 
-  socket.on('signal', (payload = {}) => {
-    try {
-      const room = payload.room || socket.data.room;
-      if (!room) return;
-      const out = Object.prototype.hasOwnProperty.call(payload, 'data')
-        ? payload.data
-        : payload;
-      socket.to(room).emit('signal', out);
-    } catch (e) {
-      console.error('signal error:', e);
-    }
-  });
+  const relaySignal = (eventName) => {
+    socket.on(eventName, (payload = {}) => {
+      const sessionId = normalizeSessionId(payload.sessionId);
+      if (!sessionId) return;
+      const room = `s:${sessionId}`;
+      socket.to(room).emit(eventName, {
+        sessionId,
+        ...(payload.sdp ? { sdp: payload.sdp } : {}),
+        ...(payload.candidate ? { candidate: payload.candidate } : {}),
+      });
+    });
+  };
+
+  ['signal:offer', 'signal:answer', 'signal:candidate'].forEach(relaySignal);
 
   socket.on('disconnect', () => {
+    connectionIndex.delete(socket.id);
     // se o cliente desconectar com pedido em fila, remove
     for (const [id, r] of requests) {
       if (r.clientId === socket.id && r.state === 'queued') {

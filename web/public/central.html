@@ -146,12 +146,14 @@
               </div>
               <div class="panel-body" style="gap: 18px;">
                 <div class="video-shell">
+                  <video id="sessionVideo" autoplay playsinline muted hidden></video>
+                  <audio id="sessionAudio" autoplay hidden></audio>
                   <div class="placeholder" id="sessionPlaceholder">Aguardando seleção de sessão</div>
                   <div class="floating-controls">
                     <button type="button" id="controlStart">Solicitar visualização</button>
-                    <button type="button" id="controlQuality">Qualidade: Auto</button>
+                    <button type="button" id="controlQuality">Iniciar chamada</button>
                     <button type="button" id="controlRemote">Solicitar acesso remoto</button>
-                    <button type="button" id="controlStats">Stats ao vivo</button>
+                    <button type="button" id="controlStats">Encerrar suporte</button>
                   </div>
                 </div>
                 <div class="indicators">

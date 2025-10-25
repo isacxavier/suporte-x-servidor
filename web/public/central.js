@@ -12,6 +12,20 @@ const state = {
     remoteActive: false,
     callActive: false,
   },
+  media: {
+    sessionId: null,
+    pc: null,
+    local: {
+      screen: null,
+      audio: null,
+    },
+    senders: {
+      screen: [],
+      audio: [],
+    },
+    remoteStream: null,
+    remoteAudioStream: null,
+  },
 };
 
 const dom = {
@@ -48,6 +62,8 @@ const dom = {
   chatForm: document.getElementById('chatForm'),
   chatInput: document.getElementById('chatInput'),
   quickReplies: document.querySelectorAll('.quick-replies button[data-reply]'),
+  sessionVideo: document.getElementById('sessionVideo'),
+  sessionAudio: document.getElementById('sessionAudio'),
   controlStart: document.getElementById('controlStart'),
   controlQuality: document.getElementById('controlQuality'),
   controlRemote: document.getElementById('controlRemote'),
@@ -113,6 +129,37 @@ const pushChatToStore = (sessionId, message) => {
   state.chatBySession.set(sessionId, bucket.sort((a, b) => a.ts - b.ts));
 };
 
+const ingestChatMessage = (message, { isSelf = false } = {}) => {
+  if (!message || !message.sessionId) return;
+  const normalized = {
+    id: message.id || `${message.sessionId}-${message.ts || Date.now()}`,
+    from: message.from || (isSelf ? 'tech' : 'client'),
+    text: message.text || '',
+    ts: message.ts || Date.now(),
+  };
+  pushChatToStore(message.sessionId, normalized);
+  const sessionIndex = state.sessions.findIndex((s) => s.sessionId === message.sessionId);
+  if (sessionIndex >= 0) {
+    const updatedLog = ensureChatStore(message.sessionId);
+    const existing = state.sessions[sessionIndex];
+    state.sessions[sessionIndex] = {
+      ...existing,
+      chatLog: updatedLog,
+      extra: { ...(existing.extra || {}), chatLog: updatedLog, lastMessageAt: normalized.ts },
+    };
+  }
+  if (state.renderedChatSessionId === message.sessionId) {
+    const session = state.sessions.find((s) => s.sessionId === message.sessionId);
+    const isTech = normalized.from === 'tech';
+    addChatMessage({
+      author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session?.clientName || normalized.from,
+      text: normalized.text,
+      kind: isTech ? 'self' : 'client',
+      ts: normalized.ts,
+    });
+  }
+};
+
 const getTelemetryForSession = (sessionId) => {
   if (!sessionId) return null;
   return state.telemetryBySession.get(sessionId) || null;
@@ -126,6 +173,302 @@ const resetCommandState = () => {
   };
   if (dom.controlStart) dom.controlStart.textContent = 'Solicitar visualização';
   if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
+  if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
+  if (dom.controlStats) dom.controlStats.textContent = 'Encerrar suporte';
+};
+
+const stopStreamTracks = (stream) => {
+  if (!stream) return;
+  try {
+    stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch (err) {
+        console.warn('Falha ao encerrar track local', err);
+      }
+    });
+  } catch (err) {
+    console.warn('Falha ao encerrar stream local', err);
+  }
+};
+
+const clearRemoteVideo = () => {
+  if (state.media.remoteStream) {
+    stopStreamTracks(state.media.remoteStream);
+  }
+  state.media.remoteStream = null;
+  if (dom.sessionVideo) {
+    dom.sessionVideo.srcObject = null;
+    dom.sessionVideo.setAttribute('hidden', 'hidden');
+  }
+  if (dom.sessionPlaceholder) {
+    dom.sessionPlaceholder.removeAttribute('hidden');
+  }
+  updateMediaDisplay();
+};
+
+const clearRemoteAudio = () => {
+  if (state.media.remoteAudioStream && state.media.remoteAudioStream !== state.media.remoteStream) {
+    stopStreamTracks(state.media.remoteAudioStream);
+  }
+  state.media.remoteAudioStream = null;
+  if (dom.sessionAudio) {
+    dom.sessionAudio.srcObject = null;
+    dom.sessionAudio.pause();
+    dom.sessionAudio.setAttribute('hidden', 'hidden');
+  }
+  updateMediaDisplay();
+};
+
+const updateMediaDisplay = () => {
+  const hasLocalScreen = Boolean(state.media.local.screen);
+  const hasRemoteVideo = Boolean(state.media.remoteStream);
+  if (dom.sessionVideo) {
+    if (hasRemoteVideo || hasLocalScreen) {
+      dom.sessionVideo.removeAttribute('hidden');
+    } else {
+      dom.sessionVideo.setAttribute('hidden', 'hidden');
+      dom.sessionVideo.srcObject = null;
+    }
+  }
+  if (dom.sessionPlaceholder) {
+    if (hasRemoteVideo || hasLocalScreen) {
+      dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
+    } else {
+      dom.sessionPlaceholder.removeAttribute('hidden');
+    }
+  }
+};
+
+const teardownPeerConnection = () => {
+  if (state.media.pc) {
+    try {
+      state.media.pc.ontrack = null;
+      state.media.pc.onicecandidate = null;
+      state.media.pc.onconnectionstatechange = null;
+      state.media.pc.close();
+    } catch (err) {
+      console.warn('Falha ao encerrar PeerConnection', err);
+    }
+  }
+  state.media.pc = null;
+  state.media.sessionId = null;
+  state.media.senders = { screen: [], audio: [] };
+  stopStreamTracks(state.media.local.screen);
+  stopStreamTracks(state.media.local.audio);
+  state.media.local = { screen: null, audio: null };
+  clearRemoteVideo();
+  clearRemoteAudio();
+};
+
+const ensurePeerConnection = (sessionId) => {
+  if (!sessionId) return null;
+  if (state.media.pc && state.media.sessionId && state.media.sessionId !== sessionId) {
+    teardownPeerConnection();
+  }
+  if (state.media.pc) return state.media.pc;
+
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate && socket && !socket.disconnected) {
+      socket.emit('signal:candidate', { sessionId, candidate: event.candidate });
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      clearRemoteVideo();
+      clearRemoteAudio();
+    }
+  };
+
+  pc.ontrack = (event) => {
+    if (!event || !event.track) return;
+    if (event.track.kind === 'video') {
+      const stream = event.streams?.[0] || new MediaStream([event.track]);
+      state.media.remoteStream = stream;
+      if (dom.sessionVideo) {
+        dom.sessionVideo.srcObject = stream;
+        dom.sessionVideo.removeAttribute('hidden');
+        const playPromise = dom.sessionVideo.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {});
+        }
+      }
+      if (dom.sessionPlaceholder) dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
+      event.track.addEventListener('ended', () => {
+        if (state.media.remoteStream === stream) {
+          clearRemoteVideo();
+        }
+      });
+    }
+    if (event.track.kind === 'audio') {
+      const audioStream = state.media.remoteAudioStream || new MediaStream();
+      audioStream.addTrack(event.track);
+      state.media.remoteAudioStream = audioStream;
+      if (dom.sessionAudio) {
+        dom.sessionAudio.srcObject = audioStream;
+        dom.sessionAudio.removeAttribute('hidden');
+        const playPromise = dom.sessionAudio.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {});
+        }
+      }
+      event.track.addEventListener('ended', () => {
+        if (state.media.remoteAudioStream) {
+          const tracks = state.media.remoteAudioStream.getTracks().filter((t) => t !== event.track);
+          const stream = new MediaStream(tracks);
+          state.media.remoteAudioStream = stream.getTracks().length ? stream : null;
+          if (!state.media.remoteAudioStream && dom.sessionAudio) {
+            clearRemoteAudio();
+          } else if (state.media.remoteAudioStream && dom.sessionAudio) {
+            dom.sessionAudio.srcObject = state.media.remoteAudioStream;
+          }
+        }
+      });
+    }
+    updateMediaDisplay();
+  };
+
+  state.media.pc = pc;
+  state.media.sessionId = sessionId;
+  return pc;
+};
+
+const removeSendersForType = (type) => {
+  if (!state.media.pc) return;
+  const senders = state.media.senders[type] || [];
+  senders.forEach((sender) => {
+    try {
+      state.media.pc.removeTrack(sender);
+    } catch (err) {
+      console.warn('Falha ao remover sender', err);
+    }
+  });
+  state.media.senders[type] = [];
+};
+
+const startLocalScreenShare = async () => {
+  const session = getSelectedSession();
+  if (!session) return;
+  if (state.media.local.screen) {
+    updateMediaDisplay();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    const pc = ensurePeerConnection(session.sessionId);
+    if (!pc) return;
+    removeSendersForType('screen');
+    const senders = stream.getTracks().map((track) => {
+      const sender = pc.addTrack(track, stream);
+      track.addEventListener('ended', () => {
+        stopLocalScreenShare(true);
+      });
+      return sender;
+    });
+    state.media.senders.screen = senders;
+    stopStreamTracks(state.media.local.screen);
+    state.media.local.screen = stream;
+    if (dom.sessionVideo) {
+      dom.sessionVideo.srcObject = stream;
+      dom.sessionVideo.muted = true;
+      dom.sessionVideo.removeAttribute('hidden');
+      const playPromise = dom.sessionVideo.play();
+      if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+    }
+    if (dom.sessionPlaceholder) dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('signal:offer', { sessionId: session.sessionId, sdp: pc.localDescription });
+    state.commandState.shareActive = true;
+    if (dom.controlStart) dom.controlStart.textContent = 'Encerrar visualização';
+    updateMediaDisplay();
+  } catch (error) {
+    console.error('Falha ao iniciar compartilhamento local', error);
+    addChatMessage({ author: 'Sistema', text: 'Não foi possível iniciar o compartilhamento de tela.', kind: 'system' });
+  }
+};
+
+const stopLocalScreenShare = async (notifyRemote = false) => {
+  removeSendersForType('screen');
+  stopStreamTracks(state.media.local.screen);
+  state.media.local.screen = null;
+  if (!state.media.remoteStream) {
+    if (dom.sessionVideo) {
+      dom.sessionVideo.srcObject = null;
+      dom.sessionVideo.setAttribute('hidden', 'hidden');
+    }
+    if (dom.sessionPlaceholder) dom.sessionPlaceholder.removeAttribute('hidden');
+  }
+  updateMediaDisplay();
+  if (notifyRemote && socket && !socket.disconnected) {
+    try {
+      const sessionId = state.media.sessionId || (getSelectedSession()?.sessionId ?? null);
+      const { session } = await sendSessionCommand('share_stop', {}, { silent: true, sessionId });
+      registerCommand({ sessionId: session.sessionId, type: 'share_stop', by: 'tech', ts: Date.now() }, { local: true });
+    } catch (err) {
+      console.warn('Falha ao notificar parada de compartilhamento', err);
+    }
+  }
+  state.commandState.shareActive = false;
+  if (dom.controlStart) dom.controlStart.textContent = 'Solicitar visualização';
+};
+
+const startLocalCall = async () => {
+  const session = getSelectedSession();
+  if (!session) return;
+  if (state.media.local.audio) {
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const pc = ensurePeerConnection(session.sessionId);
+    if (!pc) return;
+    removeSendersForType('audio');
+    const senders = stream.getTracks().map((track) => {
+      const sender = pc.addTrack(track, stream);
+      track.addEventListener('ended', () => {
+        stopLocalCall(true);
+      });
+      return sender;
+    });
+    state.media.senders.audio = senders;
+    stopStreamTracks(state.media.local.audio);
+    state.media.local.audio = stream;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('signal:offer', { sessionId: session.sessionId, sdp: pc.localDescription });
+    state.commandState.callActive = true;
+    if (dom.controlQuality) dom.controlQuality.textContent = 'Encerrar chamada';
+    updateMediaDisplay();
+  } catch (error) {
+    console.error('Falha ao iniciar chamada local', error);
+    addChatMessage({ author: 'Sistema', text: 'Não foi possível iniciar a chamada.', kind: 'system' });
+  }
+};
+
+const stopLocalCall = async (notifyRemote = false) => {
+  removeSendersForType('audio');
+  stopStreamTracks(state.media.local.audio);
+  state.media.local.audio = null;
+  if (!state.media.remoteAudioStream && dom.sessionAudio) {
+    clearRemoteAudio();
+  }
+  updateMediaDisplay();
+  if (notifyRemote && socket && !socket.disconnected) {
+    try {
+      const sessionId = state.media.sessionId || (getSelectedSession()?.sessionId ?? null);
+      const { session } = await sendSessionCommand('call_end', {}, { silent: true, sessionId });
+      registerCommand({ sessionId: session.sessionId, type: 'call_end', by: 'tech', ts: Date.now() }, { local: true });
+    } catch (err) {
+      console.warn('Falha ao notificar fim da chamada', err);
+    }
+  }
+  state.commandState.callActive = false;
   if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
 };
 
@@ -165,12 +508,15 @@ const renderChatForSession = () => {
 };
 
 const joinSelectedSession = () => {
-  if (!socket || !getSelectedSession()) return;
-  const sessionId = state.selectedSessionId;
+  if (!socket) return;
+  const session = getSelectedSession();
+  if (!session || session.status !== 'active') return;
+  const sessionId = session.sessionId;
   if (!sessionId || state.joinedSessionId === sessionId) return;
-  socket.emit('session:join', { sessionId, role: 'tech' }, (ack) => {
+  socket.emit('session:join', { sessionId, role: 'tech', userType: 'tech' }, (ack) => {
     if (ack?.ok) {
       state.joinedSessionId = sessionId;
+      state.media.sessionId = sessionId;
       addChatMessage({
         author: 'Sistema',
         text: `Entrou na sala da sessão ${sessionId}.`,
@@ -197,10 +543,13 @@ const sendChatMessage = (text) => {
     addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
     return;
   }
-  const payload = { sessionId: session.sessionId, from: 'tech', text };
+  const now = Date.now();
+  const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random()}`;
+  const payload = { sessionId: session.sessionId, from: 'tech', text, id, ts: now };
   socket.emit('session:chat:send', payload, (ack) => {
     if (ack?.ok) {
       if (dom.chatInput) dom.chatInput.value = '';
+      ingestChatMessage({ ...payload, id: ack.id || payload.id }, { isSelf: true });
     } else {
       addChatMessage({
         author: 'Sistema',
@@ -211,73 +560,194 @@ const sendChatMessage = (text) => {
   });
 };
 
-const emitSessionCommand = (type, extra = {}, onSuccess) => {
-  const session = getSelectedSession();
+const sendSessionCommand = (type, extra = {}, { silent = false, sessionId: overrideSessionId = null } = {}) => {
+  const session = overrideSessionId
+    ? state.sessions.find((s) => s.sessionId === overrideSessionId) || null
+    : getSelectedSession();
   if (!session) {
-    addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada para enviar comandos.', kind: 'system' });
-    return;
+    if (!silent) {
+      addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada para enviar comandos.', kind: 'system' });
+    }
+    return Promise.reject(new Error('no-session'));
   }
   if (!socket || socket.disconnected) {
-    addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
-    return;
-  }
-  socket.emit('session:command', { sessionId: session.sessionId, type, ...extra }, (ack) => {
-    if (ack?.ok) {
-      if (typeof onSuccess === 'function') onSuccess();
-    } else {
-      addChatMessage({
-        author: 'Sistema',
-        text: ack?.err ? `Falha ao enviar comando (${ack.err}).` : 'Falha ao enviar comando.',
-        kind: 'system',
-      });
+    if (!silent) {
+      addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
     }
+    return Promise.reject(new Error('no-connection'));
+  }
+  return new Promise((resolve, reject) => {
+    socket.emit('session:command', { sessionId: session.sessionId, type, ...extra }, (ack) => {
+      if (ack?.ok) {
+        resolve({ session, ack });
+      } else {
+        if (!silent) {
+          addChatMessage({
+            author: 'Sistema',
+            text: ack?.err ? `Falha ao enviar comando (${ack.err}).` : 'Falha ao enviar comando.',
+            kind: 'system',
+          });
+        }
+        reject(new Error(ack?.err || 'command-error'));
+      }
+    });
   });
 };
+
+const emitSessionCommand = (type, extra = {}, onSuccess) => {
+  sendSessionCommand(type, extra)
+    .then(({ session }) => {
+      const command = {
+        sessionId: session.sessionId,
+        type,
+        data: extra?.data || null,
+        by: 'tech',
+        ts: Date.now(),
+      };
+      registerCommand(command, { local: true });
+      if (typeof onSuccess === 'function') onSuccess();
+    })
+    .catch(() => {});
+};
+
+function handleSessionEnded(sessionId, reason = 'peer_ended') {
+  if (!sessionId) return;
+  if (state.media.sessionId === sessionId) {
+    teardownPeerConnection();
+    resetCommandState();
+  }
+  if (state.joinedSessionId === sessionId) {
+    state.joinedSessionId = null;
+  }
+  const ts = Date.now();
+  const index = state.sessions.findIndex((s) => s.sessionId === sessionId);
+  if (index >= 0) {
+    const session = state.sessions[index];
+    const updated = {
+      ...session,
+      status: 'closed',
+      closedAt: session.closedAt || ts,
+    };
+    state.sessions[index] = updated;
+  }
+  if (state.selectedSessionId === sessionId) {
+    let text = 'Sessão encerrada.';
+    if (reason === 'peer_ended') text = 'O cliente encerrou a sessão.';
+    if (reason === 'tech_ended') text = 'Você encerrou a sessão.';
+    addChatMessage({
+      author: 'Sistema',
+      text,
+      kind: 'system',
+    });
+  }
+  renderSessions();
+}
+
+function handleCommandEffects(command, { local = false } = {}) {
+  if (!command) return;
+  const by = command.by || (local ? 'tech' : 'unknown');
+  switch (command.type) {
+    case 'share_start':
+      state.commandState.shareActive = true;
+      if (dom.controlStart) dom.controlStart.textContent = 'Encerrar visualização';
+      if (by !== 'tech') {
+        startLocalScreenShare();
+      }
+      break;
+    case 'share_stop':
+      state.commandState.shareActive = false;
+      if (dom.controlStart) dom.controlStart.textContent = 'Solicitar visualização';
+      if (by !== 'tech') {
+        stopLocalScreenShare(false);
+      } else {
+        clearRemoteVideo();
+      }
+      break;
+    case 'remote_enable':
+      state.commandState.remoteActive = true;
+      if (dom.controlRemote) dom.controlRemote.textContent = 'Revogar acesso remoto';
+      break;
+    case 'remote_disable':
+      state.commandState.remoteActive = false;
+      if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
+      break;
+    case 'call_start':
+      state.commandState.callActive = true;
+      if (dom.controlQuality) dom.controlQuality.textContent = 'Encerrar chamada';
+      if (by !== 'tech') {
+        startLocalCall();
+      }
+      break;
+    case 'call_end':
+      state.commandState.callActive = false;
+      if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
+      stopLocalCall(false);
+      clearRemoteAudio();
+      break;
+    case 'session_end':
+      handleSessionEnded(command.sessionId, command.reason || 'peer_ended');
+      break;
+    default:
+      break;
+  }
+}
+
+function registerCommand(command, { local = false } = {}) {
+  if (!command || !command.sessionId) return;
+  const normalized = {
+    ...command,
+    ts: command.ts || Date.now(),
+    id: command.id || `${command.sessionId}-${command.ts || Date.now()}`,
+    by: command.by || (local ? 'tech' : 'unknown'),
+  };
+  if (normalized.type === 'session_end' && local) {
+    normalized.reason = normalized.reason || 'tech_ended';
+  }
+  const index = state.sessions.findIndex((s) => s.sessionId === normalized.sessionId);
+  if (index >= 0) {
+    const session = state.sessions[index];
+    const log = Array.isArray(session.commandLog) ? [...session.commandLog] : [];
+    const exists = log.some((entry) => entry.id === normalized.id);
+    if (!exists) log.push(normalized);
+    const extra = { ...(session.extra || {}), commandLog: log, lastCommand: normalized };
+    state.sessions[index] = { ...session, commandLog: log, extra };
+  }
+  if (state.selectedSessionId === normalized.sessionId) {
+    addChatMessage({
+      author: 'Sistema',
+      text: `Comando ${normalized.type} executado por ${normalized.by || 'desconhecido'}.`,
+      kind: 'system',
+      ts: normalized.ts,
+    });
+  }
+  handleCommandEffects(normalized, { local });
+}
 
 const bindSessionControls = () => {
   if (dom.controlStart) {
     dom.controlStart.addEventListener('click', () => {
-      const active = state.commandState.shareActive;
-      const nextType = active ? 'share_stop' : 'share_start';
-      emitSessionCommand(nextType, {}, () => {
-        state.commandState.shareActive = !active;
-        dom.controlStart.textContent = state.commandState.shareActive ? 'Encerrar visualização' : 'Solicitar visualização';
-      });
+      const nextType = state.commandState.shareActive ? 'share_stop' : 'share_start';
+      emitSessionCommand(nextType);
     });
   }
 
   if (dom.controlRemote) {
     dom.controlRemote.addEventListener('click', () => {
-      const active = state.commandState.remoteActive;
-      const nextType = active ? 'remote_disable' : 'remote_enable';
-      emitSessionCommand(nextType, {}, () => {
-        state.commandState.remoteActive = !active;
-        dom.controlRemote.textContent = state.commandState.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
-      });
+      const nextType = state.commandState.remoteActive ? 'remote_disable' : 'remote_enable';
+      emitSessionCommand(nextType);
     });
   }
 
   if (dom.controlQuality) {
     dom.controlQuality.addEventListener('click', () => {
-      const active = state.commandState.callActive;
-      const nextType = active ? 'call_end' : 'call_start';
-      emitSessionCommand(nextType, {}, () => {
-        state.commandState.callActive = !active;
-        dom.controlQuality.textContent = state.commandState.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
-      });
+      const nextType = state.commandState.callActive ? 'call_end' : 'call_start';
+      emitSessionCommand(nextType);
     });
   }
 
   if (dom.controlStats) {
     dom.controlStats.addEventListener('click', () => {
-      if (!state.commandState.callActive) {
-        addChatMessage({ author: 'Sistema', text: 'Nenhuma chamada em andamento para encerrar.', kind: 'system' });
-        return;
-      }
-      emitSessionCommand('call_end', {}, () => {
-        state.commandState.callActive = false;
-        if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
-      });
+      emitSessionCommand('session_end');
     });
   }
 };
@@ -340,6 +810,9 @@ const selectDefaultSession = () => {
     }
     state.renderedChatSessionId = null;
     resetCommandState();
+    if (state.media.sessionId && state.media.sessionId !== state.selectedSessionId) {
+      teardownPeerConnection();
+    }
   }
 };
 
@@ -518,6 +991,7 @@ const renderSessions = () => {
   }
 
   renderChatForSession();
+  updateMediaDisplay();
   joinSelectedSession();
 };
 
@@ -713,57 +1187,10 @@ if (socket) {
     loadMetrics();
   });
   socket.on('session:chat:new', (message) => {
-    if (!message || !message.sessionId) return;
-    const normalized = {
-      id: message.id || `${message.sessionId}-${message.ts || Date.now()}`,
-      from: message.from || 'client',
-      text: message.text || '',
-      ts: message.ts || Date.now(),
-    };
-    pushChatToStore(message.sessionId, normalized);
-    const sessionIndex = state.sessions.findIndex((s) => s.sessionId === message.sessionId);
-    if (sessionIndex >= 0) {
-      const updatedLog = ensureChatStore(message.sessionId);
-      const existing = state.sessions[sessionIndex];
-      state.sessions[sessionIndex] = {
-        ...existing,
-        chatLog: updatedLog,
-        extra: { ...(existing.extra || {}), chatLog: updatedLog, lastMessageAt: normalized.ts },
-      };
-    }
-    if (state.renderedChatSessionId === message.sessionId) {
-      const session = state.sessions.find((s) => s.sessionId === message.sessionId);
-      const isTech = normalized.from === 'tech';
-      addChatMessage({
-        author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session?.clientName || normalized.from,
-        text: normalized.text,
-        kind: isTech ? 'self' : 'client',
-        ts: normalized.ts,
-      });
-    }
+    ingestChatMessage(message);
   });
   socket.on('session:command', (command) => {
-    if (!command || !command.sessionId) return;
-    const index = state.sessions.findIndex((s) => s.sessionId === command.sessionId);
-    if (index >= 0) {
-      const session = state.sessions[index];
-      const commandLog = Array.isArray(session.commandLog) ? [...session.commandLog] : [];
-      const entry = { ...command, id: command.id || `${command.sessionId}-${command.ts || Date.now()}` };
-      commandLog.push(entry);
-      state.sessions[index] = {
-        ...session,
-        commandLog,
-        extra: { ...(session.extra || {}), commandLog, lastCommand: entry },
-      };
-    }
-    if (state.selectedSessionId === command.sessionId) {
-      addChatMessage({
-        author: 'Sistema',
-        text: `Comando ${command.type} executado por ${command.by || 'desconhecido'}.`,
-        kind: 'system',
-        ts: command.ts || Date.now(),
-      });
-    }
+    registerCommand(command);
   });
   socket.on('session:status', (status) => {
     if (!status || !status.sessionId) return;
@@ -784,6 +1211,48 @@ if (socket) {
     }
     if (state.selectedSessionId === status.sessionId) {
       renderSessions();
+    }
+  });
+  socket.on('session:ended', (payload) => {
+    if (!payload || !payload.sessionId) return;
+    handleSessionEnded(payload.sessionId, payload.reason || 'peer_ended');
+  });
+  socket.on('signal:offer', async ({ sessionId, sdp }) => {
+    if (!sessionId || !sdp) return;
+    if (state.joinedSessionId && state.joinedSessionId !== sessionId) return;
+    try {
+      const pc = ensurePeerConnection(sessionId);
+      if (!pc) return;
+      const remote = sdp.type ? sdp : { type: 'offer', sdp };
+      await pc.setRemoteDescription(remote);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('signal:answer', { sessionId, sdp: pc.localDescription });
+    } catch (error) {
+      console.error('Erro ao processar oferta remota', error);
+    }
+  });
+  socket.on('signal:answer', async ({ sessionId, sdp }) => {
+    if (!sessionId || !sdp) return;
+    if (state.media.sessionId && state.media.sessionId !== sessionId) return;
+    try {
+      const pc = ensurePeerConnection(sessionId);
+      if (!pc) return;
+      const answer = sdp.type ? sdp : { type: 'answer', sdp };
+      await pc.setRemoteDescription(answer);
+    } catch (error) {
+      console.error('Erro ao aplicar answer remota', error);
+    }
+  });
+  socket.on('signal:candidate', async ({ sessionId, candidate }) => {
+    if (!sessionId || !candidate) return;
+    if (state.media.sessionId && state.media.sessionId !== sessionId) return;
+    try {
+      const pc = ensurePeerConnection(sessionId);
+      if (!pc) return;
+      await pc.addIceCandidate(candidate);
+    } catch (error) {
+      console.error('Erro ao adicionar ICE candidate', error);
     }
   });
 }

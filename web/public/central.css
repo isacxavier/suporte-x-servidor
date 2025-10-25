@@ -52,7 +52,6 @@ body {
   grid-template-columns: 320px 1fr;
   width: 100%;
   min-height: 100vh;
-  backdrop-filter: blur(18px);
 }
 
 .sidebar {
@@ -74,7 +73,7 @@ body {
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(34, 211, 238, 0.35);
+  box-shadow: 0 6px 18px rgba(34, 211, 238, 0.28);
 }
 
 .brand h1 {
@@ -112,7 +111,7 @@ body {
   justify-content: center;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 6px 14px rgba(2, 6, 23, 0.28);
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.22);
   transition: transform 0.2s ease;
 }
 
@@ -196,7 +195,7 @@ body {
   color: #02131f;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 12px 30px rgba(34, 211, 238, 0.3);
+  box-shadow: 0 8px 20px rgba(34, 211, 238, 0.24);
   transition: transform 0.2s ease;
 }
 
@@ -439,6 +438,7 @@ body {
   display: grid;
   gap: 6px;
   box-shadow: var(--shadow);
+  contain: content;
 }
 
 .metric-label {
@@ -474,6 +474,7 @@ body {
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
+  contain: content;
 }
 
 .panel-header {

@@ -41,6 +41,8 @@ const io = new Server(server, {
       }
     : { origin: '*', methods: ['GET', 'POST'], credentials: true },
   allowEIO3: true, // compat com socket.io-client 2.x (Android)
+  pingInterval: 25000,
+  pingTimeout: 20000,
 });
 const PORT = process.env.PORT || 3000;
 const WEB_STATIC_PATH = path.resolve(__dirname, '../web/public');

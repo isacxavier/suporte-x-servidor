@@ -78,7 +78,83 @@ const dom = {
 };
 
 const SOCKET_URL = window.location.origin;
-const socket = window.io ? window.io(SOCKET_URL, { transports: ['websocket'], withCredentials: true }) : null;
+const socket = window.io
+  ? window.io(SOCKET_URL, {
+      transports: ['websocket'],
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
+      timeout: 20000,
+    })
+  : null;
+
+const CHAT_RENDER_LIMIT = 100;
+const TIMELINE_RENDER_LIMIT = 80;
+
+const pendingRenderJobs = [];
+let pendingRafId = null;
+
+function scheduleRender(fn) {
+  if (typeof fn !== 'function') return;
+  pendingRenderJobs.push(fn);
+  if (pendingRafId) return;
+  pendingRafId = requestAnimationFrame(() => {
+    const jobs = pendingRenderJobs.splice(0, pendingRenderJobs.length);
+    pendingRafId = null;
+    for (const job of jobs) {
+      try {
+        job();
+      } catch (error) {
+        console.error('Render job failed', error);
+      }
+    }
+  });
+}
+
+function cancelScheduledRenders() {
+  if (pendingRafId) {
+    cancelAnimationFrame(pendingRafId);
+    pendingRafId = null;
+  }
+  pendingRenderJobs.length = 0;
+}
+
+const sessionResources = {
+  timeouts: new Set(),
+  intervals: new Set(),
+  observers: new Set(),
+  socketHandlers: new Map(),
+};
+
+function trackTimeout(id) {
+  if (typeof id === 'number') sessionResources.timeouts.add(id);
+  return id;
+}
+
+function trackInterval(id) {
+  if (typeof id === 'number') sessionResources.intervals.add(id);
+  return id;
+}
+
+function trackObserver(observer) {
+  if (observer && typeof observer.disconnect === 'function') {
+    sessionResources.observers.add(observer);
+  }
+  return observer;
+}
+
+function registerSocketHandler(eventName, handler) {
+  if (!socket || typeof eventName !== 'string' || typeof handler !== 'function') return;
+  const existing = sessionResources.socketHandlers.get(eventName);
+  if (existing) {
+    socket.off(eventName, existing);
+  }
+  sessionResources.socketHandlers.set(eventName, handler);
+  socket.on(eventName, handler);
+}
 
 const ensureChatStore = (sessionId) => {
   if (!sessionId) return [];
@@ -125,7 +201,7 @@ const pushChatToStore = (sessionId, message) => {
   const bucket = ensureChatStore(sessionId);
   if (bucket.some((entry) => entry.id === message.id)) return;
   bucket.push(message);
-  if (bucket.length > 50) bucket.splice(0, bucket.length - 50);
+  if (bucket.length > CHAT_RENDER_LIMIT) bucket.splice(0, bucket.length - CHAT_RENDER_LIMIT);
   state.chatBySession.set(sessionId, bucket.sort((a, b) => a.ts - b.ts));
 };
 
@@ -221,23 +297,25 @@ const clearRemoteAudio = () => {
 };
 
 const updateMediaDisplay = () => {
-  const hasLocalScreen = Boolean(state.media.local.screen);
-  const hasRemoteVideo = Boolean(state.media.remoteStream);
-  if (dom.sessionVideo) {
-    if (hasRemoteVideo || hasLocalScreen) {
-      dom.sessionVideo.removeAttribute('hidden');
-    } else {
-      dom.sessionVideo.setAttribute('hidden', 'hidden');
-      dom.sessionVideo.srcObject = null;
+  scheduleRender(() => {
+    const hasLocalScreen = Boolean(state.media.local.screen);
+    const hasRemoteVideo = Boolean(state.media.remoteStream);
+    if (dom.sessionVideo) {
+      if (hasRemoteVideo || hasLocalScreen) {
+        dom.sessionVideo.removeAttribute('hidden');
+      } else {
+        dom.sessionVideo.setAttribute('hidden', 'hidden');
+        dom.sessionVideo.srcObject = null;
+      }
     }
-  }
-  if (dom.sessionPlaceholder) {
-    if (hasRemoteVideo || hasLocalScreen) {
-      dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
-    } else {
-      dom.sessionPlaceholder.removeAttribute('hidden');
+    if (dom.sessionPlaceholder) {
+      if (hasRemoteVideo || hasLocalScreen) {
+        dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
+      } else {
+        dom.sessionPlaceholder.removeAttribute('hidden');
+      }
     }
-  }
+  });
 };
 
 const teardownPeerConnection = () => {
@@ -472,39 +550,74 @@ const stopLocalCall = async (notifyRemote = false) => {
   if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
 };
 
-const renderChatForSession = () => {
-  if (!dom.chatThread) return;
-  const session = getSelectedSession();
-  if (!session) {
-    if (state.renderedChatSessionId !== null) {
-      dom.chatThread.innerHTML = '';
-      state.renderedChatSessionId = null;
-      addChatMessage({ author: 'Sistema', text: 'Selecione uma sessão para conversar com o cliente.', kind: 'system' });
-    }
-    return;
-  }
+const createChatEntryElement = ({ author, text, kind = 'client', ts = Date.now() }) => {
+  const entry = document.createElement('div');
+  entry.className = 'message';
+  if (kind === 'self') entry.classList.add('self');
+  if (kind === 'system') entry.classList.add('system');
+  entry.textContent = `${formatTime(ts)} • ${author}: ${text}`;
+  return entry;
+};
 
-  if (state.renderedChatSessionId === session.sessionId) return;
-  dom.chatThread.innerHTML = '';
-  const history = state.chatBySession.get(session.sessionId) || [];
-  if (!history.length) {
-    addChatMessage({
-      author: 'Sistema',
-      text: 'Sem mensagens trocadas ainda nesta sessão.',
-      kind: 'system',
-    });
-  } else {
-    history.forEach((msg) => {
-      const isTech = msg.from === 'tech';
-      addChatMessage({
-        author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session.clientName || msg.from,
-        text: msg.text,
-        kind: isTech ? 'self' : 'client',
-        ts: msg.ts,
+const isNearBottom = (element) => {
+  if (!element) return true;
+  const { scrollTop, scrollHeight, clientHeight } = element;
+  return scrollHeight - (scrollTop + clientHeight) <= 12;
+};
+
+const renderChatForSession = () => {
+  scheduleRender(() => {
+    if (!dom.chatThread) return;
+    const container = dom.chatThread;
+    const session = getSelectedSession();
+    if (!session) {
+      if (state.renderedChatSessionId !== null) {
+        container.replaceChildren();
+        state.renderedChatSessionId = null;
+        container.appendChild(
+          createChatEntryElement({
+            author: 'Sistema',
+            text: 'Selecione uma sessão para conversar com o cliente.',
+            kind: 'system',
+          })
+        );
+      }
+      return;
+    }
+
+    if (state.renderedChatSessionId === session.sessionId) return;
+
+    const history = state.chatBySession.get(session.sessionId) || [];
+    const messages = history.slice(-CHAT_RENDER_LIMIT);
+    const fragment = document.createDocumentFragment();
+    const techName = dom.techIdentity?.dataset?.techName || 'Você';
+    if (!messages.length) {
+      fragment.appendChild(
+        createChatEntryElement({
+          author: 'Sistema',
+          text: 'Sem mensagens trocadas ainda nesta sessão.',
+          kind: 'system',
+        })
+      );
+    } else {
+      messages.forEach((msg) => {
+        const isTech = msg.from === 'tech';
+        fragment.appendChild(
+          createChatEntryElement({
+            author: isTech ? techName : session.clientName || msg.from,
+            text: msg.text,
+            kind: isTech ? 'self' : 'client',
+            ts: msg.ts,
+          })
+        );
       });
+    }
+    container.replaceChildren(fragment);
+    state.renderedChatSessionId = session.sessionId;
+    requestAnimationFrame(() => {
+      container.scrollTop = container.scrollHeight;
     });
-  }
-  state.renderedChatSessionId = session.sessionId;
+  });
 };
 
 const joinSelectedSession = () => {
@@ -512,7 +625,11 @@ const joinSelectedSession = () => {
   const session = getSelectedSession();
   if (!session || session.status !== 'active') return;
   const sessionId = session.sessionId;
-  if (!sessionId || state.joinedSessionId === sessionId) return;
+  if (!sessionId) return;
+  if (state.joinedSessionId && state.joinedSessionId !== sessionId) {
+    cleanupSession({ rebindHandlers: true });
+  }
+  if (state.joinedSessionId === sessionId) return;
   socket.emit('session:join', { sessionId, role: 'tech', userType: 'tech' }, (ack) => {
     if (ack?.ok) {
       state.joinedSessionId = sessionId;
@@ -817,88 +934,95 @@ const selectDefaultSession = () => {
 };
 
 const renderQueue = () => {
-  if (!dom.queue) return;
-  dom.queue.innerHTML = '';
-  if (!state.queue.length) {
-    dom.queueEmpty?.removeAttribute('hidden');
-    return;
-  }
-  dom.queueEmpty?.setAttribute('hidden', 'hidden');
-  const now = Date.now();
-
-  state.queue.forEach((req) => {
-    const article = document.createElement('article');
-    article.className = 'ticket';
-
-    const header = document.createElement('div');
-    header.className = 'ticket-header';
-    const title = document.createElement('span');
-    title.className = 'ticket-title';
-    const displayName = req.clientName || 'Cliente';
-    title.textContent = `#${req.requestId} • ${displayName}`;
-    header.appendChild(title);
-    const sla = document.createElement('span');
-    sla.className = 'badge';
-    const waitMs = now - req.createdAt;
-    if (waitMs > 12 * 60000) sla.classList.add('danger');
-    else if (waitMs > 5 * 60000) sla.classList.add('warning');
-    else sla.classList.add('success');
-    sla.textContent = `Espera ${formatRelative(waitMs)}`;
-    header.appendChild(sla);
-    article.appendChild(header);
-
-    if (req.plan || req.issue) {
-      const body = document.createElement('div');
-      body.className = 'ticket-body';
-      if (req.plan) {
-        const plan = document.createElement('div');
-        plan.className = 'badge dot';
-        plan.textContent = req.plan;
-        body.appendChild(plan);
-      }
-      if (req.issue) {
-        const issue = document.createElement('div');
-        issue.className = 'muted small';
-        issue.textContent = req.issue;
-        body.appendChild(issue);
-      }
-      article.appendChild(body);
+  scheduleRender(() => {
+    if (!dom.queue) return;
+    const items = Array.isArray(state.queue) ? state.queue : [];
+    if (!items.length) {
+      dom.queue.replaceChildren();
+      dom.queueEmpty?.removeAttribute('hidden');
+      return;
     }
 
-    const footer = document.createElement('div');
-    footer.className = 'ticket-footer';
-    const device = document.createElement('span');
-    const deviceParts = [req.brand, req.model, req.osVersion ? `Android ${req.osVersion}` : null].filter(Boolean);
-    device.textContent = deviceParts.length ? deviceParts.join(' • ') : 'Dispositivo não informado';
-    footer.appendChild(device);
-    const waited = document.createElement('span');
-    waited.textContent = formatRelative(waitMs);
-    footer.appendChild(waited);
-    article.appendChild(footer);
+    dom.queueEmpty?.setAttribute('hidden', 'hidden');
+    const fragment = document.createDocumentFragment();
+    const now = Date.now();
 
-    const actions = document.createElement('div');
-    actions.className = 'ticket-actions';
-    const acceptBtn = document.createElement('button');
-    acceptBtn.className = 'tag-btn primary';
-    acceptBtn.type = 'button';
-    acceptBtn.textContent = 'Aceitar';
-    acceptBtn.addEventListener('click', () => acceptRequest(req.requestId));
-    actions.appendChild(acceptBtn);
-    const transferBtn = document.createElement('button');
-    transferBtn.className = 'tag-btn';
-    transferBtn.type = 'button';
-    transferBtn.textContent = 'Ver detalhes';
-    transferBtn.addEventListener('click', () => {
-      addChatMessage({
-        author: 'Sistema',
-        text: `Chamado ${req.requestId} de ${displayName}.`,
-        kind: 'system',
+    items.forEach((req) => {
+      const article = document.createElement('article');
+      article.className = 'ticket';
+
+      const header = document.createElement('div');
+      header.className = 'ticket-header';
+      const title = document.createElement('span');
+      title.className = 'ticket-title';
+      const displayName = req.clientName || 'Cliente';
+      title.textContent = `#${req.requestId} • ${displayName}`;
+      header.appendChild(title);
+      const sla = document.createElement('span');
+      sla.className = 'badge';
+      const waitMs = now - req.createdAt;
+      if (waitMs > 12 * 60000) sla.classList.add('danger');
+      else if (waitMs > 5 * 60000) sla.classList.add('warning');
+      else sla.classList.add('success');
+      sla.textContent = `Espera ${formatRelative(waitMs)}`;
+      header.appendChild(sla);
+      article.appendChild(header);
+
+      if (req.plan || req.issue) {
+        const body = document.createElement('div');
+        body.className = 'ticket-body';
+        if (req.plan) {
+          const plan = document.createElement('div');
+          plan.className = 'badge dot';
+          plan.textContent = req.plan;
+          body.appendChild(plan);
+        }
+        if (req.issue) {
+          const issue = document.createElement('div');
+          issue.className = 'muted small';
+          issue.textContent = req.issue;
+          body.appendChild(issue);
+        }
+        article.appendChild(body);
+      }
+
+      const footer = document.createElement('div');
+      footer.className = 'ticket-footer';
+      const device = document.createElement('span');
+      const deviceParts = [req.brand, req.model, req.osVersion ? `Android ${req.osVersion}` : null].filter(Boolean);
+      device.textContent = deviceParts.length ? deviceParts.join(' • ') : 'Dispositivo não informado';
+      footer.appendChild(device);
+      const waited = document.createElement('span');
+      waited.textContent = formatRelative(waitMs);
+      footer.appendChild(waited);
+      article.appendChild(footer);
+
+      const actions = document.createElement('div');
+      actions.className = 'ticket-actions';
+      const acceptBtn = document.createElement('button');
+      acceptBtn.className = 'tag-btn primary';
+      acceptBtn.type = 'button';
+      acceptBtn.textContent = 'Aceitar';
+      acceptBtn.addEventListener('click', () => acceptRequest(req.requestId));
+      actions.appendChild(acceptBtn);
+      const transferBtn = document.createElement('button');
+      transferBtn.className = 'tag-btn';
+      transferBtn.type = 'button';
+      transferBtn.textContent = 'Ver detalhes';
+      transferBtn.addEventListener('click', () => {
+        addChatMessage({
+          author: 'Sistema',
+          text: `Chamado ${req.requestId} de ${displayName}.`,
+          kind: 'system',
+        });
       });
-    });
-    actions.appendChild(transferBtn);
-    article.appendChild(actions);
+      actions.appendChild(transferBtn);
+      article.appendChild(actions);
 
-    dom.queue.appendChild(article);
+      fragment.appendChild(article);
+    });
+
+    dom.queue.replaceChildren(fragment);
   });
 };
 
@@ -911,84 +1035,129 @@ const updateTechIdentity = () => {
 };
 
 const renderSessions = () => {
-  const active = state.sessions.filter((s) => s.status === 'active');
-  const label = active.length === 1 ? '1 em andamento' : `${active.length} em andamento`;
-  dom.activeSessionsLabel.textContent = label;
-  dom.techStatus.textContent = active.length ? 'Em atendimento agora' : 'Aguardando chamados';
-  dom.availability.textContent = active.length ? 'Em atendimento' : 'Disponível';
   selectDefaultSession();
-  const session = getSelectedSession();
-  if (!session) {
-    dom.contextDevice.textContent = '—';
-    dom.contextIdentity.textContent = 'Nenhum atendimento selecionado';
-    dom.contextNetwork.textContent = '—';
-    dom.contextHealth.textContent = '—';
-    dom.contextPermissions.textContent = '—';
-    dom.sessionPlaceholder.textContent = 'Aguardando seleção de sessão';
-    renderChatForSession();
-    return;
-  }
 
-  const telemetry = getTelemetryForSession(session.sessionId) || session.telemetry || session.extra?.telemetry || {};
-  if (typeof telemetry.shareActive === 'boolean' && dom.controlStart) {
-    state.commandState.shareActive = telemetry.shareActive;
-    dom.controlStart.textContent = telemetry.shareActive ? 'Encerrar visualização' : 'Solicitar visualização';
-  }
-  if (typeof telemetry.remoteActive === 'boolean' && dom.controlRemote) {
-    state.commandState.remoteActive = telemetry.remoteActive;
-    dom.controlRemote.textContent = telemetry.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
-  }
-  if (typeof telemetry.callActive === 'boolean' && dom.controlQuality) {
-    state.commandState.callActive = telemetry.callActive;
-    dom.controlQuality.textContent = telemetry.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
-  }
+  scheduleRender(() => {
+    const activeSessions = state.sessions.filter((s) => s.status === 'active');
+    const activeCount = activeSessions.length;
+    const label = activeCount === 1 ? '1 em andamento' : `${activeCount} em andamento`;
+    const availabilityLabel = activeCount ? 'Em atendimento' : 'Disponível';
+    const techStatusLabel = activeCount ? 'Em atendimento agora' : 'Aguardando chamados';
 
-  const deviceParts = [session.brand, session.model, session.osVersion ? `Android ${session.osVersion}` : null].filter(Boolean);
-  dom.contextDevice.textContent = deviceParts.length ? deviceParts.join(' • ') : 'Dispositivo não informado';
-  dom.contextIdentity.textContent = session.clientName ? `${session.clientName}` : 'Cliente';
-  dom.contextNetwork.textContent = telemetry.network || session.extra?.network || 'Aguardando dados do app';
-  dom.contextHealth.textContent = telemetry.health || session.extra?.health || 'Aguardando dados do app';
-  dom.contextPermissions.textContent = telemetry.permissions || session.extra?.permissions || 'Sem registros';
-  dom.sessionPlaceholder.textContent = session.status === 'active'
-    ? `Sessão ${session.sessionId} • aguardando conexão`
-    : `Sessão ${session.sessionId} encerrada ${formatRelative(Date.now() - (session.closedAt || session.acceptedAt))}`;
-  dom.indicatorNetwork.textContent = telemetry.network || session.extra?.network || (session.status === 'active' ? 'Aguardando telemetria do app' : 'Sessão encerrada');
-  dom.indicatorQuality.textContent = session.status === 'active' ? 'Online' : 'Finalizada';
-  dom.indicatorAlerts.textContent = telemetry.alerts || session.extra?.alerts || (session.status === 'active' ? 'Sem alertas' : 'Encerrada');
+    if (dom.activeSessionsLabel) dom.activeSessionsLabel.textContent = label;
+    if (dom.techStatus) dom.techStatus.textContent = techStatusLabel;
+    if (dom.availability) dom.availability.textContent = availabilityLabel;
 
-  if (dom.contextTimeline) {
-    dom.contextTimeline.innerHTML = '';
-    const events = [];
-    if (session.requestedAt) events.push({ at: session.requestedAt, text: 'Cliente entrou na fila' });
-    if (session.acceptedAt) events.push({ at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' });
-    if (session.closedAt) events.push({ at: session.closedAt, text: 'Atendimento encerrado' });
-    if (!events.length) {
-      const entry = document.createElement('div');
-      entry.className = 'timeline-entry';
-      entry.textContent = 'Sem eventos registrados ainda.';
-      dom.contextTimeline.appendChild(entry);
-    } else {
-      events
+    const session = getSelectedSession();
+    const telemetry = session
+      ? getTelemetryForSession(session.sessionId) || session.telemetry || session.extra?.telemetry || {}
+      : null;
+
+    if (!session) {
+      if (dom.contextDevice) dom.contextDevice.textContent = '—';
+      if (dom.contextIdentity) dom.contextIdentity.textContent = 'Nenhum atendimento selecionado';
+      if (dom.contextNetwork) dom.contextNetwork.textContent = '—';
+      if (dom.contextHealth) dom.contextHealth.textContent = '—';
+      if (dom.contextPermissions) dom.contextPermissions.textContent = '—';
+      if (dom.sessionPlaceholder) dom.sessionPlaceholder.textContent = 'Aguardando seleção de sessão';
+      if (dom.indicatorNetwork) dom.indicatorNetwork.textContent = '—';
+      if (dom.indicatorQuality) dom.indicatorQuality.textContent = '—';
+      if (dom.indicatorAlerts) dom.indicatorAlerts.textContent = '—';
+      if (dom.contextTimeline) {
+        dom.contextTimeline.replaceChildren(
+          (() => {
+            const entry = document.createElement('div');
+            entry.className = 'timeline-entry';
+            entry.textContent = 'Sem eventos registrados ainda.';
+            return entry;
+          })()
+        );
+      }
+      if (dom.closureForm) {
+        dom.closureSubmit.disabled = true;
+        dom.closureSubmit.textContent = 'Encerrar suporte e disparar pesquisa';
+        dom.closureOutcome.disabled = true;
+        dom.closureSymptom.disabled = true;
+        dom.closureSolution.disabled = true;
+        dom.closureNps.disabled = true;
+        dom.closureFcr.disabled = true;
+      }
+      return;
+    }
+
+    const deviceParts = [session.brand, session.model, session.osVersion ? `Android ${session.osVersion}` : null].filter(Boolean);
+    if (dom.contextDevice) dom.contextDevice.textContent = deviceParts.length ? deviceParts.join(' • ') : 'Dispositivo não informado';
+    if (dom.contextIdentity) dom.contextIdentity.textContent = session.clientName ? `${session.clientName}` : 'Cliente';
+
+    if (telemetry && typeof telemetry.shareActive === 'boolean' && dom.controlStart) {
+      state.commandState.shareActive = telemetry.shareActive;
+      dom.controlStart.textContent = telemetry.shareActive ? 'Encerrar visualização' : 'Solicitar visualização';
+    }
+    if (telemetry && typeof telemetry.remoteActive === 'boolean' && dom.controlRemote) {
+      state.commandState.remoteActive = telemetry.remoteActive;
+      dom.controlRemote.textContent = telemetry.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
+    }
+    if (telemetry && typeof telemetry.callActive === 'boolean' && dom.controlQuality) {
+      state.commandState.callActive = telemetry.callActive;
+      dom.controlQuality.textContent = telemetry.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
+    }
+
+    const networkLabel = telemetry?.network || session.extra?.network || (session.status === 'active' ? 'Aguardando dados do app' : 'Sessão encerrada');
+    const healthLabel = telemetry?.health || session.extra?.health || 'Aguardando dados do app';
+    const permissionsLabel = telemetry?.permissions || session.extra?.permissions || 'Sem registros';
+    const alertsLabel = telemetry?.alerts || session.extra?.alerts || (session.status === 'active' ? 'Sem alertas' : 'Encerrada');
+    if (dom.contextNetwork) dom.contextNetwork.textContent = networkLabel;
+    if (dom.contextHealth) dom.contextHealth.textContent = healthLabel;
+    if (dom.contextPermissions) dom.contextPermissions.textContent = permissionsLabel;
+    if (dom.indicatorNetwork) dom.indicatorNetwork.textContent = networkLabel;
+    if (dom.indicatorQuality) dom.indicatorQuality.textContent = session.status === 'active' ? 'Online' : 'Finalizada';
+    if (dom.indicatorAlerts) dom.indicatorAlerts.textContent = alertsLabel;
+
+    if (dom.sessionPlaceholder) {
+      dom.sessionPlaceholder.textContent =
+        session.status === 'active'
+          ? `Sessão ${session.sessionId} • aguardando conexão`
+          : `Sessão ${session.sessionId} encerrada ${formatRelative(Date.now() - (session.closedAt || session.acceptedAt))}`;
+    }
+
+    if (dom.contextTimeline) {
+      const timelineEvents = [
+        session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
+        session.acceptedAt ? { at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' } : null,
+        session.closedAt ? { at: session.closedAt, text: 'Atendimento encerrado' } : null,
+      ]
+        .filter(Boolean)
         .sort((a, b) => a.at - b.at)
-        .forEach((evt) => {
+        .slice(-TIMELINE_RENDER_LIMIT);
+
+      if (!timelineEvents.length) {
+        const entry = document.createElement('div');
+        entry.className = 'timeline-entry';
+        entry.textContent = 'Sem eventos registrados ainda.';
+        dom.contextTimeline.replaceChildren(entry);
+      } else {
+        const fragment = document.createDocumentFragment();
+        timelineEvents.forEach((evt) => {
           const entry = document.createElement('div');
           entry.className = 'timeline-entry';
           entry.textContent = `${formatTime(evt.at)} • ${evt.text}`;
-          dom.contextTimeline.appendChild(entry);
+          fragment.appendChild(entry);
         });
+        dom.contextTimeline.replaceChildren(fragment);
+      }
     }
-  }
 
-  if (dom.closureForm) {
-    const isClosed = session.status === 'closed';
-    dom.closureSubmit.disabled = isClosed;
-    dom.closureSubmit.textContent = isClosed ? 'Atendimento encerrado' : 'Encerrar suporte e disparar pesquisa';
-    dom.closureOutcome.disabled = isClosed;
-    dom.closureSymptom.disabled = isClosed;
-    dom.closureSolution.disabled = isClosed;
-    dom.closureNps.disabled = isClosed;
-    dom.closureFcr.disabled = isClosed;
-  }
+    if (dom.closureForm) {
+      const isClosed = session.status === 'closed';
+      dom.closureSubmit.disabled = isClosed;
+      dom.closureSubmit.textContent = isClosed ? 'Atendimento encerrado' : 'Encerrar suporte e disparar pesquisa';
+      dom.closureOutcome.disabled = isClosed;
+      dom.closureSymptom.disabled = isClosed;
+      dom.closureSolution.disabled = isClosed;
+      dom.closureNps.disabled = isClosed;
+      dom.closureFcr.disabled = isClosed;
+    }
+  });
 
   renderChatForSession();
   updateMediaDisplay();
@@ -997,25 +1166,41 @@ const renderSessions = () => {
 
 const renderMetrics = () => {
   if (!state.metrics) return;
-  dom.metricAttendances.textContent = state.metrics.attendancesToday ?? 0;
-  dom.metricQueue.textContent = `Fila atual: ${state.metrics.queueSize ?? 0}`;
-  dom.metricFcr.textContent = typeof state.metrics.fcrPercentage === 'number' ? `${state.metrics.fcrPercentage}%` : '—';
-  dom.metricFcrDetail.textContent = state.metrics.fcrPercentage != null ? 'Base: atendimentos encerrados hoje' : 'Aguardando dados';
-  dom.metricNps.textContent = typeof state.metrics.nps === 'number' ? state.metrics.nps : '—';
-  dom.metricNpsDetail.textContent = state.metrics.nps != null ? 'Cálculo: promotores - detratores' : 'Coletado ao encerrar';
-  dom.metricHandle.textContent = state.metrics.averageHandleMs != null ? formatDuration(state.metrics.averageHandleMs) : '—';
-  dom.metricWait.textContent = state.metrics.averageWaitMs != null ? `Espera média ${formatDuration(state.metrics.averageWaitMs)}` : 'Espera média —';
+  const metrics = state.metrics;
+  scheduleRender(() => {
+    if (dom.metricAttendances) dom.metricAttendances.textContent = metrics.attendancesToday ?? 0;
+    if (dom.metricQueue) dom.metricQueue.textContent = `Fila atual: ${metrics.queueSize ?? 0}`;
+    if (dom.metricFcr) dom.metricFcr.textContent = typeof metrics.fcrPercentage === 'number' ? `${metrics.fcrPercentage}%` : '—';
+    if (dom.metricFcrDetail)
+      dom.metricFcrDetail.textContent = metrics.fcrPercentage != null ? 'Base: atendimentos encerrados hoje' : 'Aguardando dados';
+    if (dom.metricNps) dom.metricNps.textContent = typeof metrics.nps === 'number' ? metrics.nps : '—';
+    if (dom.metricNpsDetail)
+      dom.metricNpsDetail.textContent = metrics.nps != null ? 'Cálculo: promotores - detratores' : 'Coletado ao encerrar';
+    if (dom.metricHandle)
+      dom.metricHandle.textContent = metrics.averageHandleMs != null ? formatDuration(metrics.averageHandleMs) : '—';
+    if (dom.metricWait)
+      dom.metricWait.textContent =
+        metrics.averageWaitMs != null ? `Espera média ${formatDuration(metrics.averageWaitMs)}` : 'Espera média —';
+  });
 };
 
 const addChatMessage = ({ author, text, kind = 'client', ts = Date.now() }) => {
-  if (!dom.chatThread || !text) return;
-  const entry = document.createElement('div');
-  entry.className = 'message';
-  if (kind === 'self') entry.classList.add('self');
-  if (kind === 'system') entry.classList.add('system');
-  entry.textContent = `${formatTime(ts)} • ${author}: ${text}`;
-  dom.chatThread.appendChild(entry);
-  dom.chatThread.scrollTo({ top: dom.chatThread.scrollHeight, behavior: 'smooth' });
+  if (!text) return;
+  scheduleRender(() => {
+    if (!dom.chatThread) return;
+    const container = dom.chatThread;
+    const shouldStick = isNearBottom(container);
+    const entry = createChatEntryElement({ author, text, kind, ts });
+    container.appendChild(entry);
+    while (container.children.length > CHAT_RENDER_LIMIT) {
+      container.removeChild(container.firstChild);
+    }
+    if (shouldStick) {
+      requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+      });
+    }
+  });
 };
 
 const acceptRequest = async (requestId) => {
@@ -1157,103 +1342,168 @@ const bootstrap = async () => {
   await Promise.all([loadQueue(), loadSessions(), loadMetrics()]);
 };
 
-if (socket) {
-  socket.on('connect', () => {
-    addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
-    state.joinedSessionId = null;
-    joinSelectedSession();
-  });
-  socket.on('disconnect', () => {
-    addChatMessage({ author: 'Sistema', text: 'Desconectado. Tentando reconectar…', kind: 'system' });
-  });
-  socket.on('queue:updated', () => {
-    loadQueue();
-    loadMetrics();
-  });
-  socket.on('session:updated', (session) => {
-    const index = state.sessions.findIndex((s) => s.sessionId === session.sessionId);
-    if (index >= 0) {
-      state.sessions[index] = {
-        ...state.sessions[index],
-        ...session,
-        extra: { ...(state.sessions[index].extra || {}), ...(session.extra || {}) },
-      };
-      syncSessionStores(state.sessions[index]);
-    } else {
-      state.sessions.unshift(session);
-      syncSessionStores(session);
-    }
+function handleSocketConnect() {
+  addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
+  state.joinedSessionId = null;
+  joinSelectedSession();
+}
+
+function handleSocketDisconnect() {
+  addChatMessage({ author: 'Sistema', text: 'Desconectado. Tentando reconectar…', kind: 'system' });
+}
+
+function handleQueueUpdated() {
+  loadQueue();
+  loadMetrics();
+}
+
+function handleSessionUpdated(session) {
+  if (!session || !session.sessionId) return;
+  const index = state.sessions.findIndex((s) => s.sessionId === session.sessionId);
+  if (index >= 0) {
+    state.sessions[index] = {
+      ...state.sessions[index],
+      ...session,
+      extra: { ...(state.sessions[index].extra || {}), ...(session.extra || {}) },
+    };
+    syncSessionStores(state.sessions[index]);
+  } else {
+    state.sessions.unshift(session);
+    syncSessionStores(session);
+  }
+  renderSessions();
+  loadMetrics();
+}
+
+function handleSessionChat(message) {
+  ingestChatMessage(message);
+}
+
+function handleSessionCommandEvent(command) {
+  registerCommand(command);
+}
+
+function handleSessionStatus(status) {
+  if (!status || !status.sessionId) return;
+  const ts = status.ts || Date.now();
+  const current = getTelemetryForSession(status.sessionId) || {};
+  const data = typeof status.data === 'object' && status.data !== null ? status.data : {};
+  const merged = { ...current, ...data, updatedAt: ts };
+  state.telemetryBySession.set(status.sessionId, merged);
+  const index = state.sessions.findIndex((s) => s.sessionId === status.sessionId);
+  if (index >= 0) {
+    const session = state.sessions[index];
+    const extra = { ...(session.extra || {}), telemetry: merged };
+    if (typeof data.network !== 'undefined') extra.network = data.network;
+    if (typeof data.health !== 'undefined') extra.health = data.health;
+    if (typeof data.permissions !== 'undefined') extra.permissions = data.permissions;
+    if (typeof data.alerts !== 'undefined') extra.alerts = data.alerts;
+    state.sessions[index] = { ...session, telemetry: merged, extra };
+  }
+  if (state.selectedSessionId === status.sessionId) {
     renderSessions();
-    loadMetrics();
+  }
+}
+
+function handleSessionEndedEvent(payload) {
+  if (!payload || !payload.sessionId) return;
+  const reason = payload.reason || 'peer_ended';
+  handleSessionEnded(payload.sessionId, reason);
+  if (state.joinedSessionId === payload.sessionId || state.media.sessionId === payload.sessionId) {
+    cleanupSession({ rebindHandlers: true });
+    renderSessions();
+  }
+}
+
+async function handleSignalOffer({ sessionId, sdp }) {
+  if (!sessionId || !sdp) return;
+  if (state.joinedSessionId && state.joinedSessionId !== sessionId) return;
+  try {
+    const pc = ensurePeerConnection(sessionId);
+    if (!pc) return;
+    const remote = sdp.type ? sdp : { type: 'offer', sdp };
+    await pc.setRemoteDescription(remote);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('signal:answer', { sessionId, sdp: pc.localDescription });
+  } catch (error) {
+    console.error('Erro ao processar oferta remota', error);
+  }
+}
+
+async function handleSignalAnswer({ sessionId, sdp }) {
+  if (!sessionId || !sdp) return;
+  if (state.media.sessionId && state.media.sessionId !== sessionId) return;
+  try {
+    const pc = ensurePeerConnection(sessionId);
+    if (!pc) return;
+    const answer = sdp.type ? sdp : { type: 'answer', sdp };
+    await pc.setRemoteDescription(answer);
+  } catch (error) {
+    console.error('Erro ao aplicar answer remota', error);
+  }
+}
+
+async function handleSignalCandidate({ sessionId, candidate }) {
+  if (!sessionId || !candidate) return;
+  if (state.media.sessionId && state.media.sessionId !== sessionId) return;
+  try {
+    const pc = ensurePeerConnection(sessionId);
+    if (!pc) return;
+    await pc.addIceCandidate(candidate);
+  } catch (error) {
+    console.error('Erro ao adicionar ICE candidate', error);
+  }
+}
+
+function setupSocketHandlers() {
+  if (!socket) return;
+  registerSocketHandler('connect', handleSocketConnect);
+  registerSocketHandler('disconnect', handleSocketDisconnect);
+  registerSocketHandler('queue:updated', handleQueueUpdated);
+  registerSocketHandler('session:updated', handleSessionUpdated);
+  registerSocketHandler('session:chat:new', handleSessionChat);
+  registerSocketHandler('session:command', handleSessionCommandEvent);
+  registerSocketHandler('session:status', handleSessionStatus);
+  registerSocketHandler('session:ended', handleSessionEndedEvent);
+  registerSocketHandler('signal:offer', handleSignalOffer);
+  registerSocketHandler('signal:answer', handleSignalAnswer);
+  registerSocketHandler('signal:candidate', handleSignalCandidate);
+}
+
+function cleanupSession({ rebindHandlers = false } = {}) {
+  sessionResources.timeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+  sessionResources.timeouts.clear();
+  sessionResources.intervals.forEach((intervalId) => clearInterval(intervalId));
+  sessionResources.intervals.clear();
+  sessionResources.observers.forEach((observer) => {
+    if (observer && typeof observer.disconnect === 'function') observer.disconnect();
   });
-  socket.on('session:chat:new', (message) => {
-    ingestChatMessage(message);
+  sessionResources.observers.clear();
+  if (socket) {
+    sessionResources.socketHandlers.forEach((handler, eventName) => {
+      socket.off(eventName, handler);
+    });
+  }
+  sessionResources.socketHandlers.clear();
+  cancelScheduledRenders();
+  teardownPeerConnection();
+  resetCommandState();
+  state.joinedSessionId = null;
+  state.media.sessionId = null;
+  state.renderedChatSessionId = null;
+  scheduleRender(() => {
+    dom.chatThread?.replaceChildren();
   });
-  socket.on('session:command', (command) => {
-    registerCommand(command);
-  });
-  socket.on('session:status', (status) => {
-    if (!status || !status.sessionId) return;
-    const ts = status.ts || Date.now();
-    const current = getTelemetryForSession(status.sessionId) || {};
-    const data = typeof status.data === 'object' && status.data !== null ? status.data : {};
-    const merged = { ...current, ...data, updatedAt: ts };
-    state.telemetryBySession.set(status.sessionId, merged);
-    const index = state.sessions.findIndex((s) => s.sessionId === status.sessionId);
-    if (index >= 0) {
-      const session = state.sessions[index];
-      const extra = { ...(session.extra || {}), telemetry: merged };
-      if (typeof data.network !== 'undefined') extra.network = data.network;
-      if (typeof data.health !== 'undefined') extra.health = data.health;
-      if (typeof data.permissions !== 'undefined') extra.permissions = data.permissions;
-      if (typeof data.alerts !== 'undefined') extra.alerts = data.alerts;
-      state.sessions[index] = { ...session, telemetry: merged, extra };
-    }
-    if (state.selectedSessionId === status.sessionId) {
-      renderSessions();
-    }
-  });
-  socket.on('session:ended', (payload) => {
-    if (!payload || !payload.sessionId) return;
-    handleSessionEnded(payload.sessionId, payload.reason || 'peer_ended');
-  });
-  socket.on('signal:offer', async ({ sessionId, sdp }) => {
-    if (!sessionId || !sdp) return;
-    if (state.joinedSessionId && state.joinedSessionId !== sessionId) return;
-    try {
-      const pc = ensurePeerConnection(sessionId);
-      if (!pc) return;
-      const remote = sdp.type ? sdp : { type: 'offer', sdp };
-      await pc.setRemoteDescription(remote);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('signal:answer', { sessionId, sdp: pc.localDescription });
-    } catch (error) {
-      console.error('Erro ao processar oferta remota', error);
-    }
-  });
-  socket.on('signal:answer', async ({ sessionId, sdp }) => {
-    if (!sessionId || !sdp) return;
-    if (state.media.sessionId && state.media.sessionId !== sessionId) return;
-    try {
-      const pc = ensurePeerConnection(sessionId);
-      if (!pc) return;
-      const answer = sdp.type ? sdp : { type: 'answer', sdp };
-      await pc.setRemoteDescription(answer);
-    } catch (error) {
-      console.error('Erro ao aplicar answer remota', error);
-    }
-  });
-  socket.on('signal:candidate', async ({ sessionId, candidate }) => {
-    if (!sessionId || !candidate) return;
-    if (state.media.sessionId && state.media.sessionId !== sessionId) return;
-    try {
-      const pc = ensurePeerConnection(sessionId);
-      if (!pc) return;
-      await pc.addIceCandidate(candidate);
-    } catch (error) {
-      console.error('Erro ao adicionar ICE candidate', error);
-    }
+  if (rebindHandlers) {
+    setupSocketHandlers();
+  }
+}
+
+if (socket) {
+  setupSocketHandlers();
+  window.addEventListener('beforeunload', () => {
+    cleanupSession();
   });
 }
 

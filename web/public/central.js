@@ -55,6 +55,13 @@ let firebaseAppInstance = null;
 let firestoreInstance = null;
 let firebaseConfigCache = null;
 
+const QUEUE_RETRY_INITIAL_DELAY_MS = 5000;
+const QUEUE_RETRY_MAX_DELAY_MS = 60000;
+let queueRetryDelayMs = QUEUE_RETRY_INITIAL_DELAY_MS;
+let queueRetryTimer = null;
+let queueLoadPromise = null;
+let queueUnavailable = false;
+
 const resolveFirebaseConfig = () => {
   if (firebaseConfigCache) return firebaseConfigCache;
   const candidates = [
@@ -116,6 +123,7 @@ const unsubscribeAllSessionRealtime = () => {
 const dom = {
   queue: document.getElementById('queue'),
   queueEmpty: document.getElementById('queueEmpty'),
+  queueRetry: document.getElementById('queueRetry'),
   availability: document.getElementById('availabilityLabel'),
   techStatus: document.getElementById('techStatus'),
   techRole: document.getElementById('techRole'),
@@ -160,6 +168,78 @@ const dom = {
   closureNps: document.getElementById('closureNps'),
   closureFcr: document.getElementById('closureFcr'),
   closureSubmit: document.getElementById('closureSubmit'),
+  toast: document.getElementById('toast'),
+};
+
+const showToast = (message) => {
+  if (!dom.toast) return;
+  dom.toast.textContent = message;
+  dom.toast.hidden = !message;
+};
+
+const hideToast = () => {
+  if (!dom.toast) return;
+  dom.toast.textContent = '';
+  dom.toast.hidden = true;
+};
+
+const clearQueueRetryTimer = () => {
+  if (queueRetryTimer) {
+    clearTimeout(queueRetryTimer);
+    queueRetryTimer = null;
+  }
+};
+
+const resetQueueRetryTimer = () => {
+  clearQueueRetryTimer();
+  queueRetryDelayMs = QUEUE_RETRY_INITIAL_DELAY_MS;
+};
+
+const resetQueueRetryState = () => {
+  resetQueueRetryTimer();
+  queueUnavailable = false;
+  if (dom.queueRetry) {
+    dom.queueRetry.hidden = true;
+  }
+  hideToast();
+};
+
+const scheduleQueueRetry = (statusText = '') => {
+  clearQueueRetryTimer();
+  const delay = queueRetryDelayMs;
+  queueRetryTimer = window.setTimeout(() => {
+    queueRetryTimer = null;
+    loadQueue();
+  }, delay);
+  const seconds = Math.round(delay / 1000);
+  const context = statusText ? ` (${statusText})` : '';
+  console.warn(`[queue] Fila indisponível${context}. Nova tentativa em ${seconds}s.`);
+  queueRetryDelayMs = Math.min(queueRetryDelayMs * 2, QUEUE_RETRY_MAX_DELAY_MS);
+};
+
+const updateQueueMetrics = (size) => {
+  if (!state.metrics) return;
+  state.metrics = {
+    ...state.metrics,
+    queueSize: typeof size === 'number' ? size : null,
+    lastUpdated: Date.now(),
+  };
+  renderMetrics();
+};
+
+const markQueueUnavailable = ({ statusText = '' } = {}) => {
+  if (!queueUnavailable) {
+    queueUnavailable = true;
+    queueRetryDelayMs = QUEUE_RETRY_INITIAL_DELAY_MS;
+  }
+  if (dom.queueRetry) {
+    dom.queueRetry.hidden = false;
+  }
+  showToast('Fila indisponível. Tente novamente.');
+  state.queue = [];
+  renderQueue();
+  updateQueueMetrics(0);
+  scheduleQueueRetry(statusText);
 };
 
 const getTechProfile = () => {
@@ -1275,7 +1355,8 @@ function resetDashboard({ sessionId = null, reason = 'peer_ended' } = {}) {
 
   setSessionState(SessionStates.IDLE, null);
 
-  Promise.all([loadQueue(), loadSessions(), loadMetrics()]).catch((error) => {
+  loadQueue();
+  Promise.all([loadSessions(), loadMetrics()]).catch((error) => {
     console.warn('Falha ao atualizar dados após reset', error);
   });
 }
@@ -1765,36 +1846,56 @@ const acceptRequest = async (requestId) => {
     }
     const { sessionId } = await res.json();
     addChatMessage({ author: 'Sistema', text: `Chamado ${requestId} aceito. Sessão ${sessionId}`, kind: 'system' });
-    await Promise.all([loadQueue(), loadSessions(), loadMetrics()]);
+    loadQueue({ manual: true });
+    await Promise.all([loadSessions(), loadMetrics()]);
   } catch (error) {
     console.error(error);
     addChatMessage({ author: 'Sistema', text: error.message || 'Não foi possível aceitar o chamado.', kind: 'system' });
   }
 };
 
-const loadQueue = async () => {
+const loadQueue = async ({ manual = false } = {}) => {
+  if (queueLoadPromise) {
+    return queueLoadPromise;
+  }
+
+  if (manual) {
+    resetQueueRetryTimer();
+  }
+
+  queueLoadPromise = (async () => {
+    try {
+      const response = await fetch('/api/requests?status=queued');
+      if (!response.ok) {
+        if (response.status === 500 || response.status === 503) {
+          markQueueUnavailable({ statusText: `status ${response.status}` });
+        } else {
+          resetQueueRetryState();
+          const statusText = `status ${response.status}`;
+          console.warn(`[queue] Erro ao carregar fila (${statusText}).`);
+          state.queue = [];
+          renderQueue();
+          updateQueueMetrics(0);
+        }
+        return [];
+      }
+
+      const data = await response.json().catch(() => []);
+      state.queue = Array.isArray(data) ? data : [];
+      renderQueue();
+      updateQueueMetrics(Array.isArray(state.queue) ? state.queue.length : null);
+      resetQueueRetryState();
+      return state.queue;
+    } catch (_error) {
+      markQueueUnavailable({ statusText: 'falha de rede' });
+      return [];
+    }
+  })();
+
   try {
-    const res = await fetch('/api/requests?status=queued');
-    if (!res.ok) throw new Error('Erro ao carregar fila');
-    const data = await res.json();
-    state.queue = Array.isArray(data) ? data : [];
-    renderQueue();
-    if (state.metrics) {
-      state.metrics = {
-        ...state.metrics,
-        queueSize: Array.isArray(state.queue) ? state.queue.length : null,
-        lastUpdated: Date.now(),
-      };
-      renderMetrics();
-    }
-  } catch (error) {
-    console.error(error);
-    state.queue = [];
-    renderQueue();
-    if (state.metrics) {
-      state.metrics = { ...state.metrics, queueSize: 0, lastUpdated: Date.now() };
-      renderMetrics();
-    }
+    return await queueLoadPromise;
+  } finally {
+    queueLoadPromise = null;
   }
 };
 
@@ -1959,6 +2060,18 @@ const bindClosureForm = () => {
   });
 };
 
+const bindQueueRetryButton = () => {
+  if (!dom.queueRetry) return;
+  dom.queueRetry.addEventListener('click', () => {
+    if (dom.queueRetry.disabled) return;
+    dom.queueRetry.disabled = true;
+    resetQueueRetryTimer();
+    loadQueue({ manual: true }).finally(() => {
+      dom.queueRetry.disabled = false;
+    });
+  });
+};
+
 const bootstrap = async () => {
   updateTechIdentity();
   setSessionState(SessionStates.IDLE, null);
@@ -1966,7 +2079,9 @@ const bootstrap = async () => {
   bindSessionControls();
   initChat();
   bindClosureForm();
-  await Promise.all([loadQueue(), loadSessions(), loadMetrics()]);
+  bindQueueRetryButton();
+  loadQueue();
+  await Promise.all([loadSessions(), loadMetrics()]);
 };
 
 function handleSocketConnect() {
@@ -1980,7 +2095,7 @@ function handleSocketDisconnect() {
 }
 
 function handleQueueUpdated() {
-  loadQueue();
+  loadQueue({ manual: true });
   loadMetrics();
 }
 

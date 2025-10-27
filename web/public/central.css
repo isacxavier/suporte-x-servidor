@@ -238,6 +238,53 @@ body {
   background: rgba(15, 23, 42, 0.35);
 }
 
+.queue-retry-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.queue-retry-btn:hover {
+  background: rgba(34, 211, 238, 0.12);
+  transform: translateY(-1px);
+}
+
+.queue-retry-btn[hidden] {
+  display: none;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: var(--surface-solid);
+  color: var(--text);
+  padding: 12px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 2000;
+  max-width: 90vw;
+  text-align: center;
+}
+
+.toast[hidden] {
+  display: none;
+}
+
 .pulse-border {
   animation: pulse 2s ease-out 1;
 }

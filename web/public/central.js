@@ -407,11 +407,9 @@ const pickSessionQueryConstraint = (tech) => {
     ['techUid', tech.uid],
     ['techId', tech.id],
     ['techEmail', tech.email],
-    ['techName', tech.name],
     ['tech.uid', tech.uid],
     ['tech.id', tech.id],
     ['tech.email', tech.email],
-    ['tech.name', tech.name],
   ];
   for (const [field, value] of attempts) {
     if (typeof value === 'string' && value.trim()) {

@@ -23,6 +23,7 @@ const state = {
   sessions: [],
   metrics: null,
   techProfile: null,
+  techIdentifiers: new Set(),
   selectedSessionId: null,
   joinedSessionId: null,
   sessionState: SessionStates.IDLE,
@@ -242,8 +243,29 @@ const markQueueUnavailable = ({ statusText = '' } = {}) => {
   scheduleQueueRetry(statusText);
 };
 
+const normalizeIdentifier = (value) => {
+  if (typeof value === 'string' && value.trim()) return value.trim().toLowerCase();
+  return null;
+};
+
+const updateTechIdentifiers = (tech) => {
+  const identifiers = new Set();
+  if (tech) {
+    const add = (value) => {
+      if (value == null) return;
+      const normalized = normalizeIdentifier(typeof value === 'string' ? value : String(value));
+      if (normalized) identifiers.add(normalized);
+    };
+    add(tech.uid);
+    add(tech.id);
+    add(tech.email);
+    add(tech.name);
+  }
+  state.techIdentifiers = identifiers;
+  return identifiers;
+};
+
 const getTechProfile = () => {
-  if (state.techProfile) return state.techProfile;
   const dataset = dom.techIdentity?.dataset || {};
   const candidates = [
     typeof window !== 'undefined' ? window.__CENTRAL_TECH__ : null,
@@ -252,26 +274,137 @@ const getTechProfile = () => {
     typeof window !== 'undefined' ? window.__CENTRAL_CONTEXT__?.tech : null,
   ];
   const context = candidates.find((candidate) => candidate && typeof candidate === 'object') || {};
+  const previous = state.techProfile || {};
+  const resolvedUid =
+    context.uid ||
+    context.techUid ||
+    context.id ||
+    dataset.techUid ||
+    dataset.techId ||
+    dataset.uid ||
+    previous.uid ||
+    previous.id ||
+    null;
+  const resolvedId =
+    context.id ||
+    context.techId ||
+    dataset.techId ||
+    dataset.techUid ||
+    previous.id ||
+    previous.uid ||
+    resolvedUid ||
+    null;
+  const resolvedEmail =
+    context.email ||
+    context.techEmail ||
+    dataset.techEmail ||
+    dataset.email ||
+    previous.email ||
+    null;
+  const resolvedName =
+    context.name ||
+    context.techName ||
+    dataset.techName ||
+    dataset.name ||
+    previous.name ||
+    dom.techIdentity?.textContent?.trim() ||
+    'Técnico';
   const tech = {
+    ...previous,
     ...context,
-    uid:
-      context.uid ||
-      context.id ||
-      context.techUid ||
-      dataset.techUid ||
-      dataset.techId ||
-      dataset.uid ||
-      null,
-    name: context.name || dataset.techName || dataset.name || dom.techIdentity?.textContent?.trim() || 'Técnico',
-    email: context.email || dataset.techEmail || dataset.email || null,
+    uid: resolvedUid,
+    id: resolvedId,
+    name: resolvedName,
+    email: resolvedEmail,
   };
   state.techProfile = tech;
+  updateTechIdentifiers(tech);
   if (dom.techIdentity) {
     if (tech.uid) dom.techIdentity.dataset.techUid = tech.uid;
+    else delete dom.techIdentity.dataset.techUid;
+    if (tech.id) dom.techIdentity.dataset.techId = tech.id;
+    else delete dom.techIdentity.dataset.techId;
     if (tech.name) dom.techIdentity.dataset.techName = tech.name;
+    else delete dom.techIdentity.dataset.techName;
     if (tech.email) dom.techIdentity.dataset.techEmail = tech.email;
+    else delete dom.techIdentity.dataset.techEmail;
   }
   return state.techProfile;
+};
+
+const ensureTechIdentifiers = () => {
+  if (state.techIdentifiers instanceof Set && state.techIdentifiers.size) {
+    return state.techIdentifiers;
+  }
+  const profile = state.techProfile || getTechProfile();
+  return updateTechIdentifiers(profile);
+};
+
+const extractSessionIdentifiers = (session) => {
+  if (!session || typeof session !== 'object') return [];
+  const identifiers = [];
+  const push = (value) => {
+    if (value != null) identifiers.push(value);
+  };
+  push(session.techUid);
+  push(session.techId);
+  push(session.techEmail);
+  push(session.techName);
+  const extra = session.extra || {};
+  if (extra) {
+    push(extra.techUid);
+    push(extra.techId);
+    push(extra.techEmail);
+    push(extra.techName);
+    if (extra.tech && typeof extra.tech === 'object') {
+      push(extra.tech.uid);
+      push(extra.tech.id);
+      push(extra.tech.email);
+      push(extra.tech.name);
+    }
+  }
+  return identifiers;
+};
+
+const sessionMatchesCurrentTech = (session) => {
+  const identifiers = ensureTechIdentifiers();
+  if (!(identifiers instanceof Set) || identifiers.size === 0) {
+    return true;
+  }
+  const candidates = extractSessionIdentifiers(session)
+    .map((value) => normalizeIdentifier(String(value)))
+    .filter(Boolean);
+  if (!candidates.length) return false;
+  return candidates.some((candidate) => identifiers.has(candidate));
+};
+
+const filterSessionsForCurrentTech = (sessions) => {
+  if (!Array.isArray(sessions)) return [];
+  const identifiers = ensureTechIdentifiers();
+  if (!(identifiers instanceof Set) || identifiers.size === 0) {
+    return sessions;
+  }
+  return sessions.filter((session) => sessionMatchesCurrentTech(session));
+};
+
+const pickSessionQueryConstraint = (tech) => {
+  if (!tech || typeof tech !== 'object') return null;
+  const attempts = [
+    ['techUid', tech.uid],
+    ['techId', tech.id],
+    ['techEmail', tech.email],
+    ['techName', tech.name],
+    ['tech.uid', tech.uid],
+    ['tech.id', tech.id],
+    ['tech.email', tech.email],
+    ['tech.name', tech.name],
+  ];
+  for (const [field, value] of attempts) {
+    if (typeof value === 'string' && value.trim()) {
+      return { field, value };
+    }
+  }
+  return null;
 };
 
 const SOCKET_URL = window.location.origin;
@@ -468,7 +601,9 @@ const normalizeSessionDoc = (doc) => {
     sessionId,
     requestId: data.requestId || data.request?.id || sessionId,
     techName: data.techName || data.tech?.name || tech.name,
-    techUid: data.tech?.uid || data.techUid || tech.uid || null,
+    techId: data.tech?.id || data.techId || tech.id || tech.uid || null,
+    techUid: data.tech?.uid || data.techUid || tech.uid || tech.id || null,
+    techEmail: data.tech?.email || data.techEmail || tech.email || null,
     clientName: data.clientName || data.client?.name || data.client?.displayName || 'Cliente',
     brand: data.brand || data.device?.brand || data.client?.device?.brand || null,
     model: data.model || data.device?.model || data.client?.device?.model || null,
@@ -532,6 +667,8 @@ const normalizeEventDoc = (doc) => {
     toMillis(data.ts) ||
     toMillis(data.createdAt) ||
     toMillis(data.updatedAt) ||
+    toMillis(doc?.createTime) ||
+    toMillis(doc?.updateTime) ||
     null;
   const telemetryPayload = {};
   if (typeof data.shareActive === 'boolean') telemetryPayload.shareActive = data.shareActive;
@@ -662,9 +799,10 @@ const updateSessionRealtimeSubscriptions = (sessions) => {
 
 const updateMetricsFromSessions = (sessions) => {
   if (!Array.isArray(sessions)) return;
+  const relevantSessions = filterSessionsForCurrentTech(sessions);
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const todaysSessions = sessions.filter((session) => {
+  const todaysSessions = relevantSessions.filter((session) => {
     const basis = session.acceptedAt || session.requestedAt || session.closedAt || 0;
     return basis >= startOfDay;
   });
@@ -1747,6 +1885,16 @@ const renderSessions = () => {
           .filter((evt) => evt.text)
           .sort((a, b) => (a.at || 0) - (b.at || 0))
           .slice(-TIMELINE_RENDER_LIMIT);
+        if (timelineEvents.length > 1) {
+          const deduped = [];
+          timelineEvents.forEach((evt) => {
+            const last = deduped[deduped.length - 1];
+            if (!last || last.text !== evt.text || last.at !== evt.at) {
+              deduped.push(evt);
+            }
+          });
+          timelineEvents = deduped;
+        }
       } else {
         timelineEvents = [
           session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
@@ -1833,12 +1981,17 @@ const addChatMessage = ({ author, text, kind = 'client', ts = Date.now() }) => {
 
 const acceptRequest = async (requestId) => {
   if (!requestId) return;
-  const techName = dom.techIdentity?.dataset?.techName || 'Técnico';
+  const tech = getTechProfile();
+  const techName = tech.name || dom.techIdentity?.dataset?.techName || 'Técnico';
+  const payload = { techName };
+  if (tech.id) payload.techId = tech.id;
+  if (tech.uid) payload.techUid = tech.uid;
+  if (tech.email) payload.techEmail = tech.email;
   try {
     const res = await fetch(`/api/requests/${requestId}/accept`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ techName }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
@@ -1920,13 +2073,6 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
     if (!skipMetrics) updateMetricsFromSessions([]);
     return [];
   }
-  if (!tech?.uid) {
-    console.warn('UID do técnico ausente. Ignorando carregamento de sessões.');
-    state.sessions = [];
-    renderSessions();
-    if (!skipMetrics) updateMetricsFromSessions([]);
-    return [];
-  }
 
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -1934,21 +2080,36 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
 
   pendingSessionsPromise = (async () => {
     let docs = [];
-    const baseConstraints = [where('tech.uid', '==', tech.uid)];
-    try {
-      const q = query(
-        sessionsRef,
-        ...baseConstraints,
-        where('acceptedAt', '>=', Timestamp.fromMillis(startOfDay)),
-        orderBy('acceptedAt', 'desc'),
-        limit(120)
-      );
-      const snapshot = await getDocs(q);
-      docs = snapshot.docs;
-    } catch (error) {
-      console.warn('Falha ao aplicar filtro diário nas sessões. Usando fallback.', error);
+    const constraint = pickSessionQueryConstraint(tech);
+    const rangeConstraint = where('acceptedAt', '>=', Timestamp.fromMillis(startOfDay));
+    const orderConstraint = orderBy('acceptedAt', 'desc');
+    if (constraint) {
       try {
-        const fallbackQuery = query(sessionsRef, ...baseConstraints, orderBy('acceptedAt', 'desc'), limit(120));
+        const constrainedQuery = query(
+          sessionsRef,
+          where(constraint.field, '==', constraint.value),
+          rangeConstraint,
+          orderConstraint,
+          limit(120)
+        );
+        const snapshot = await getDocs(constrainedQuery);
+        docs = snapshot.docs;
+        if (!docs.length) {
+          console.warn(
+            `[sessions] Nenhum documento encontrado com filtro ${constraint.field}. Aplicando fallback sem filtro.`,
+            constraint.value
+          );
+        }
+      } catch (error) {
+        console.warn(`[sessions] Falha ao aplicar filtro ${constraint.field}. Usando fallback.`, error);
+      }
+    } else {
+      console.warn('Nenhum identificador único do técnico disponível. Carregando sessões sem filtro.');
+    }
+
+    if (!docs.length) {
+      try {
+        const fallbackQuery = query(sessionsRef, rangeConstraint, orderConstraint, limit(120));
         const snapshot = await getDocs(fallbackQuery);
         docs = snapshot.docs;
       } catch (innerError) {
@@ -1958,8 +2119,9 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
     }
 
     const normalized = docs.map((docSnap) => normalizeSessionDoc(docSnap)).filter(Boolean);
-    normalized.sort((a, b) => (b.acceptedAt || b.requestedAt || 0) - (a.acceptedAt || a.requestedAt || 0));
-    return normalized;
+    const filtered = filterSessionsForCurrentTech(normalized);
+    filtered.sort((a, b) => (b.acceptedAt || b.requestedAt || 0) - (a.acceptedAt || a.requestedAt || 0));
+    return filtered;
   })();
 
   let sessions = [];
@@ -1972,6 +2134,17 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
   }
 
   state.sessions = sessions;
+  const sessionIdSet = new Set(state.sessions.map((session) => session.sessionId));
+  state.chatBySession.forEach((_value, key) => {
+    if (!sessionIdSet.has(key)) {
+      state.chatBySession.delete(key);
+    }
+  });
+  state.telemetryBySession.forEach((_value, key) => {
+    if (!sessionIdSet.has(key)) {
+      state.telemetryBySession.delete(key);
+    }
+  });
   state.sessions.forEach(syncSessionStores);
   updateSessionRealtimeSubscriptions(sessions);
   renderSessions();
@@ -2101,6 +2274,18 @@ function handleQueueUpdated() {
 
 function handleSessionUpdated(session) {
   if (!session || !session.sessionId) return;
+  if (!sessionMatchesCurrentTech(session)) {
+    const existingIndex = state.sessions.findIndex((s) => s.sessionId === session.sessionId);
+    if (existingIndex >= 0) {
+      state.sessions.splice(existingIndex, 1);
+      state.chatBySession.delete(session.sessionId);
+      state.telemetryBySession.delete(session.sessionId);
+      updateSessionRealtimeSubscriptions(state.sessions);
+      renderSessions();
+      loadMetrics();
+    }
+    return;
+  }
   const index = state.sessions.findIndex((s) => s.sessionId === session.sessionId);
   if (index >= 0) {
     state.sessions[index] = {
@@ -2128,9 +2313,13 @@ function handleSessionCommandEvent(command) {
 
 function handleSessionStatus(status) {
   if (!status || !status.sessionId) return;
+  if (!state.sessions.some((s) => s.sessionId === status.sessionId)) return;
   const ts = status.ts || Date.now();
   const current = getTelemetryForSession(status.sessionId) || {};
   const data = typeof status.data === 'object' && status.data !== null ? status.data : {};
+  if (!Object.keys(data).length) return;
+  const hasChanges = Object.entries(data).some(([key, value]) => current[key] !== value);
+  if (!hasChanges) return;
   const merged = { ...current, ...data, updatedAt: ts };
   state.telemetryBySession.set(status.sessionId, merged);
   const index = state.sessions.findIndex((s) => s.sessionId === status.sessionId);

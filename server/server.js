@@ -14,6 +14,19 @@ const ensureString = (value, fallback = '') => {
   return fallback;
 };
 
+const parseJsonObject = (value) => {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (err) {
+    console.warn('Failed to parse JSON config', err);
+  }
+  return null;
+};
+
 const normalizeSessionId = (value) => {
   if (typeof value !== 'string') return '';
   return value.trim().slice(0, 64);
@@ -25,6 +38,57 @@ const respondAck = (ack, payload) => {
   }
 };
 
+let firebaseProjectId = null;
+let firebaseClientConfigCache = undefined;
+
+const resolveFirebaseClientConfig = () => {
+  if (firebaseClientConfigCache !== undefined) {
+    return firebaseClientConfigCache;
+  }
+
+  const jsonSources = [
+    ensureString(process.env.CENTRAL_FIREBASE_CONFIG || '', ''),
+    ensureString(process.env.FIREBASE_CLIENT_CONFIG || '', ''),
+  ].filter(Boolean);
+
+  for (const source of jsonSources) {
+    const parsed = parseJsonObject(source);
+    if (parsed) {
+      firebaseClientConfigCache = parsed;
+      return firebaseClientConfigCache;
+    }
+  }
+
+  const fieldMap = {
+    apiKey: ['CENTRAL_FIREBASE_API_KEY', 'FIREBASE_API_KEY'],
+    authDomain: ['CENTRAL_FIREBASE_AUTH_DOMAIN'],
+    projectId: ['CENTRAL_FIREBASE_PROJECT_ID'],
+    storageBucket: ['CENTRAL_FIREBASE_STORAGE_BUCKET'],
+    messagingSenderId: ['CENTRAL_FIREBASE_MESSAGING_SENDER_ID'],
+    appId: ['CENTRAL_FIREBASE_APP_ID'],
+    measurementId: ['CENTRAL_FIREBASE_MEASUREMENT_ID'],
+    databaseURL: ['CENTRAL_FIREBASE_DATABASE_URL'],
+  };
+
+  const config = {};
+  Object.entries(fieldMap).forEach(([field, envKeys]) => {
+    for (const envKey of envKeys) {
+      const value = ensureString(process.env[envKey] || '', '');
+      if (value) {
+        config[field] = value;
+        break;
+      }
+    }
+  });
+
+  if (!config.projectId && firebaseProjectId) {
+    config.projectId = firebaseProjectId;
+  }
+
+  firebaseClientConfigCache = Object.keys(config).length ? config : null;
+  return firebaseClientConfigCache;
+};
+
 const initializeFirebase = () => {
   if (admin.apps.length) return admin.app();
 
@@ -34,18 +98,20 @@ const initializeFirebase = () => {
   try {
     if (serviceAccountJson) {
       const serviceAccount = JSON.parse(serviceAccountJson);
+      firebaseProjectId = serviceAccount.project_id || projectId || firebaseProjectId;
       return admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
-        projectId: serviceAccount.project_id || projectId,
+        projectId: firebaseProjectId,
       });
     }
   } catch (err) {
     console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT', err);
   }
 
+  firebaseProjectId = projectId || firebaseProjectId || null;
   return admin.initializeApp({
     credential: admin.credential.applicationDefault(),
-    projectId,
+    projectId: firebaseProjectId || undefined,
   });
 };
 
@@ -107,6 +173,28 @@ app.use(express.static(WEB_STATIC_PATH, {
     }
   }
 }));
+
+app.get('/central-config.js', (_req, res) => {
+  const config = resolveFirebaseClientConfig();
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const serialized = config ? JSON.stringify(config) : 'null';
+  const safeSerialized = serialized.replace(/</g, '\\u003C');
+  const script = `(() => {
+    const target = (window.__CENTRAL_CONFIG__ = window.__CENTRAL_CONFIG__ || {});
+    if (!target.firebase) {
+      target.firebase = ${safeSerialized};
+    }
+    if (!target.firebase) {
+      console.warn('Firebase client config not configured for central.');
+    }
+  })();`;
+
+  res.send(script);
+});
 
 // ===== Estado
 const nanoid = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);

@@ -4,6 +4,7 @@ const http = require('http');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const { customAlphabet } = require('nanoid');
+const admin = require('firebase-admin');
 
 const ensureString = (value, fallback = '') => {
   if (typeof value === 'string') return value.slice(0, 256);
@@ -23,6 +24,37 @@ const respondAck = (ack, payload) => {
     ack(payload);
   }
 };
+
+const initializeFirebase = () => {
+  if (admin.apps.length) return admin.app();
+
+  const serviceAccountJson = ensureString(process.env.FIREBASE_SERVICE_ACCOUNT || '', '');
+  const projectId = ensureString(process.env.FIREBASE_PROJECT_ID || '', '') || undefined;
+
+  try {
+    if (serviceAccountJson) {
+      const serviceAccount = JSON.parse(serviceAccountJson);
+      return admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: serviceAccount.project_id || projectId,
+      });
+    }
+  } catch (err) {
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT', err);
+  }
+
+  return admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+    projectId,
+  });
+};
+
+const firebaseApp = initializeFirebase();
+const db = firebaseApp.firestore();
+db.settings({ ignoreUndefinedProperties: true });
+const FieldValue = admin.firestore.FieldValue;
+const sessionsCollection = db.collection('sessions');
+const requestsCollection = db.collection('requests');
 
 // ===== Básico
 const app = express();
@@ -76,25 +108,159 @@ app.use(express.static(WEB_STATIC_PATH, {
   }
 }));
 
-// ===== Estado em memória
+// ===== Estado
 const nanoid = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
-const requests = new Map(); // requestId -> { requestId, clientId, clientName, brand, model, osVersion?, plan?, issue?, createdAt, state }
-const sessions = new Map(); // sessionId -> { sessionId, requestId, clientId, techName?, clientName, brand, model, requestedAt, acceptedAt, waitTimeMs, status, closedAt?, outcome?, firstContactResolution?, npsScore?, symptom?, solution?, handleTimeMs? }
 
 // ====== SOCKETS
 const connectionIndex = new Map();
+
+const getRequestById = async (requestId) => {
+  const snapshot = await requestsCollection.doc(requestId).get();
+  if (!snapshot.exists) return null;
+  return { requestId: snapshot.id, ...snapshot.data() };
+};
+
+const getSessionSnapshot = async (sessionId) => {
+  const normalized = normalizeSessionId(sessionId);
+  if (!normalized) return null;
+  const snapshot = await sessionsCollection.doc(normalized).get();
+  if (!snapshot.exists) return null;
+  return snapshot;
+};
+
+const fetchMessages = async (sessionRef, limit = 50) => {
+  const snapshot = await sessionRef.collection('messages').orderBy('ts', 'desc').limit(limit).get();
+  const messages = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  messages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  return messages;
+};
+
+const fetchEvents = async (sessionRef, limit = 100) => {
+  const snapshot = await sessionRef.collection('events').orderBy('ts', 'desc').limit(limit).get();
+  const events = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  return events;
+};
+
+const buildSessionState = async (sessionId, { includeLogs = true, snapshot: providedSnapshot = null } = {}) => {
+  const snapshot = providedSnapshot || (await getSessionSnapshot(sessionId));
+  if (!snapshot) return null;
+
+  const data = snapshot.data() || {};
+  const base = {
+    sessionId: snapshot.id,
+    requestId: data.requestId || null,
+    techId: data.techId || null,
+    techUid: data.techUid || null,
+    techName: data.techName || null,
+    clientId: data.clientId || null,
+    clientUid: data.clientUid || null,
+    clientName: data.clientName || null,
+    brand: data.brand || null,
+    model: data.model || null,
+    osVersion: data.osVersion || null,
+    plan: data.plan || null,
+    issue: data.issue || null,
+    requestedAt: data.requestedAt || null,
+    acceptedAt: data.acceptedAt || null,
+    waitTimeMs: data.waitTimeMs || null,
+    status: data.status || 'active',
+    closedAt: data.closedAt || null,
+    handleTimeMs: data.handleTimeMs || null,
+    firstContactResolution:
+      typeof data.firstContactResolution === 'boolean' ? data.firstContactResolution : null,
+    npsScore: typeof data.npsScore === 'number' ? data.npsScore : null,
+    outcome: data.outcome || null,
+    symptom: data.symptom || null,
+    solution: data.solution || null,
+    notes: data.notes || null,
+    telemetry: typeof data.telemetry === 'object' && data.telemetry !== null ? data.telemetry : {},
+    extra: typeof data.extra === 'object' && data.extra !== null ? { ...data.extra } : {},
+  };
+
+  if (includeLogs) {
+    const [messages, events] = await Promise.all([
+      fetchMessages(snapshot.ref),
+      fetchEvents(snapshot.ref),
+    ]);
+    const commandLog = events.filter((event) => event.kind === 'command');
+
+    base.chatLog = messages;
+    base.commandLog = commandLog;
+    base.events = events;
+
+    base.extra = {
+      ...base.extra,
+      chatLog: messages,
+      commandLog,
+      telemetry: base.telemetry,
+    };
+
+    if (messages.length) {
+      base.extra.lastMessageAt = messages[messages.length - 1].ts || null;
+    }
+    if (commandLog.length) {
+      base.extra.lastCommand = commandLog[commandLog.length - 1] || null;
+    }
+  } else {
+    base.chatLog = [];
+    base.commandLog = [];
+  }
+
+  if (typeof base.telemetry === 'object' && base.telemetry !== null) {
+    const telemetry = base.telemetry;
+    if (typeof telemetry.network !== 'undefined') base.extra.network = telemetry.network;
+    if (typeof telemetry.health !== 'undefined') base.extra.health = telemetry.health;
+    if (typeof telemetry.permissions !== 'undefined') base.extra.permissions = telemetry.permissions;
+    if (typeof telemetry.alerts !== 'undefined') base.extra.alerts = telemetry.alerts;
+  }
+
+  return base;
+};
+
+const emitSessionUpdated = async (sessionId, options = {}) => {
+  try {
+    const session = await buildSessionState(sessionId, options);
+    if (session) {
+      io.emit('session:updated', session);
+    }
+  } catch (err) {
+    console.error('Failed to emit session update', err);
+  }
+};
+
+const normalizeEventType = (type) => {
+  switch (type) {
+    case 'remote_disable':
+      return 'remote_revoke';
+    case 'remote_enable':
+      return 'remote_grant';
+    case 'session_end':
+      return 'end';
+    default:
+      return type;
+  }
+};
+
+const toMillis = (value, fallback = null) => {
+  if (value === undefined || value === null) return fallback;
+  const num = Number(value);
+  if (Number.isFinite(num)) return num;
+  return fallback;
+};
 
 io.on('connection', (socket) => {
   connectionIndex.set(socket.id, { socketId: socket.id, userType: 'unknown', sessionId: null });
 
   // 1) CLIENTE cria um pedido de suporte (fila real)
   // payload: { clientName?, brand?, model? }
-  socket.on('support:request', (payload = {}) => {
+  socket.on('support:request', async (payload = {}) => {
     const requestId = nanoid().toUpperCase();
     const now = Date.now();
-    const req = {
+    const requestData = {
       requestId,
       clientId: socket.id,
+      clientUid: ensureString(payload.clientUid || payload.uid || '', '') || null,
       clientName: ensureString(payload.clientName, 'Cliente'),
       brand: ensureString(payload.brand || payload?.device?.brand || '', '') || null,
       model: ensureString(payload.model || payload?.device?.model || '', '') || null,
@@ -103,15 +269,17 @@ io.on('connection', (socket) => {
       issue: ensureString(payload.issue || '', '') || null,
       extra: typeof payload.extra === 'object' && payload.extra !== null ? payload.extra : {},
       createdAt: now,
-      state: 'queued'
+      state: 'queued',
     };
-    requests.set(requestId, req);
 
-    // resposta pro cliente
-    socket.emit('support:enqueued', { requestId });
-
-    // (Opcional) avisar técnicos por socket também
-    io.emit('queue:updated', { requestId, state: 'queued' });
+    try {
+      await requestsCollection.doc(requestId).set(requestData);
+      socket.emit('support:enqueued', { requestId });
+      io.emit('queue:updated', { requestId, state: 'queued' });
+    } catch (err) {
+      console.error('Failed to persist support request', err);
+      socket.emit('support:error', { error: 'request_failed' });
+    }
   });
 
   // Mantém sua sinalização atual por sala (sessionId)
@@ -125,14 +293,14 @@ io.on('connection', (socket) => {
     socket.to(room).emit('peer-joined', { role });
   });
 
-  socket.on('session:join', (payload = {}, ack) => {
+  socket.on('session:join', async (payload = {}, ack) => {
     const sessionId = normalizeSessionId(payload.sessionId);
     if (!sessionId) {
       return respondAck(ack, { ok: false, err: 'no-session' });
     }
 
-    const session = sessions.get(sessionId);
-    if (!session) {
+    const snapshot = await getSessionSnapshot(sessionId);
+    if (!snapshot) {
       return respondAck(ack, { ok: false, err: 'session-not-found' });
     }
 
@@ -148,7 +316,7 @@ io.on('connection', (socket) => {
     respondAck(ack, { ok: true });
   });
 
-  socket.on('session:chat:send', (msg = {}, ack) => {
+  socket.on('session:chat:send', async (msg = {}, ack) => {
     const sessionId = normalizeSessionId(msg.sessionId);
     const text = ensureString(msg.text || '', '').trim();
     const from = ensureString(msg.from || '', '');
@@ -156,103 +324,121 @@ io.on('connection', (socket) => {
       return respondAck(ack, { ok: false, err: 'bad-payload' });
     }
 
-    const session = sessions.get(sessionId);
-    if (!session) {
+    const snapshot = await getSessionSnapshot(sessionId);
+    if (!snapshot) {
       return respondAck(ack, { ok: false, err: 'session-not-found' });
     }
 
     const room = `s:${sessionId}`;
     const providedId = ensureString(msg.id || '', '');
     const ts = typeof msg.ts === 'number' ? msg.ts : Date.now();
+    const messageId = providedId || Date.now().toString(36);
     const out = {
-      id: providedId || Date.now().toString(36),
+      id: messageId,
       sessionId,
       from: from || 'unknown',
       text,
       ts,
     };
 
-    socket.to(room).emit('session:chat:new', out);
+    try {
+      await snapshot.ref.collection('messages').doc(messageId).set(out);
+      await snapshot.ref.set(
+        {
+          lastMessageAt: ts,
+          updatedAt: ts,
+          'extra.lastMessageAt': ts,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Failed to store chat message', err);
+      return respondAck(ack, { ok: false, err: 'store-failed' });
+    }
 
-    const log = Array.isArray(session.chatLog) ? session.chatLog : [];
-    log.push(out);
-    if (log.length > 50) log.splice(0, log.length - 50);
-    session.chatLog = log;
-    session.extra = session.extra || {};
-    session.extra.chatLog = log;
-    session.extra.lastMessageAt = out.ts;
-    sessions.set(sessionId, session);
-    io.emit('session:updated', session);
+    socket.to(room).emit('session:chat:new', out);
+    await emitSessionUpdated(sessionId);
 
     respondAck(ack, { ok: true, id: out.id });
   });
 
-  socket.on('session:command', (cmd = {}, ack) => {
+  socket.on('session:command', async (cmd = {}, ack) => {
     const sessionId = normalizeSessionId(cmd.sessionId);
-    const type = ensureString(cmd.type || '', '').trim();
-    if (!sessionId || !type) {
+    const rawType = ensureString(cmd.type || '', '').trim();
+    if (!sessionId || !rawType) {
       return respondAck(ack, { ok: false, err: 'bad-payload' });
     }
 
-    const session = sessions.get(sessionId);
-    if (!session) {
+    const snapshot = await getSessionSnapshot(sessionId);
+    if (!snapshot) {
       return respondAck(ack, { ok: false, err: 'session-not-found' });
     }
 
+    const session = snapshot.data() || {};
     const byRole = socket.data?.sessionRoles?.[sessionId];
     const ts = Date.now();
+    const normalizedType = normalizeEventType(rawType);
+    const by = ensureString(cmd.by || byRole || socket.id, '');
+    const eventId = ensureString(cmd.id || '', '') || `${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const enriched = {
+      id: eventId,
       sessionId,
-      type,
+      type: normalizedType,
+      rawType,
       data: cmd.data || null,
-      by: ensureString(cmd.by || byRole || socket.id, ''),
+      by,
       ts,
+      kind: 'command',
     };
 
     const room = `s:${sessionId}`;
-    socket.to(room).emit('session:command', enriched);
+    const socketPayload = {
+      ...enriched,
+      type: rawType,
+      normalizedType,
+    };
+    socket.to(room).emit('session:command', socketPayload);
 
-    const commandLog = Array.isArray(session.commandLog) ? session.commandLog : [];
-    commandLog.push(enriched);
-    if (commandLog.length > 50) commandLog.splice(0, commandLog.length - 50);
-    session.commandLog = commandLog;
-    session.extra = session.extra || {};
-    session.extra.commandLog = commandLog;
-    session.extra.lastCommand = enriched;
+    const nextTelemetry =
+      typeof session.telemetry === 'object' && session.telemetry !== null ? { ...session.telemetry } : {};
 
-    session.telemetry = session.telemetry || {};
-    const updateTelemetryFlag = (flag, value) => {
-      session.telemetry[flag] = value;
-      session.extra[flag] = value;
+    const setFlag = (flag, value) => {
+      nextTelemetry[flag] = value;
     };
 
-    switch (type) {
+    const updates = {
+      updatedAt: ts,
+      lastCommandAt: ts,
+      'extra.lastCommand': enriched,
+    };
+
+    switch (normalizedType) {
       case 'share_start':
-        updateTelemetryFlag('shareActive', true);
+        setFlag('shareActive', true);
         break;
       case 'share_stop':
-        updateTelemetryFlag('shareActive', false);
+        setFlag('shareActive', false);
         break;
-      case 'remote_enable':
-        updateTelemetryFlag('remoteActive', true);
+      case 'remote_grant':
+        setFlag('remoteActive', true);
         break;
-      case 'remote_disable':
-        updateTelemetryFlag('remoteActive', false);
+      case 'remote_revoke':
+        setFlag('remoteActive', false);
         break;
       case 'call_start':
-        updateTelemetryFlag('callActive', true);
+        setFlag('callActive', true);
         break;
       case 'call_end':
-        updateTelemetryFlag('callActive', false);
+        setFlag('callActive', false);
         break;
-      case 'session_end': {
-        session.status = 'closed';
-        session.closedAt = ts;
-        session.handleTimeMs = ts - (session.acceptedAt || session.createdAt || ts);
-        session.outcome = session.outcome || 'peer_ended';
-        updateTelemetryFlag('shareActive', false);
-        updateTelemetryFlag('callActive', false);
-        updateTelemetryFlag('remoteActive', false);
+      case 'end': {
+        updates.status = 'closed';
+        updates.closedAt = ts;
+        updates.handleTimeMs = ts - (session.acceptedAt || session.createdAt || ts);
+        updates.outcome = session.outcome || 'peer_ended';
+        setFlag('shareActive', false);
+        setFlag('callActive', false);
+        setFlag('remoteActive', false);
         io.to(room).emit('session:ended', { sessionId, reason: 'peer_ended' });
         io.socketsLeave(room);
         break;
@@ -261,44 +447,98 @@ io.on('connection', (socket) => {
         break;
     }
 
-    sessions.set(sessionId, session);
-    io.emit('session:updated', session);
+    nextTelemetry.updatedAt = ts;
+
+    const telemetryUpdates = Object.keys(nextTelemetry).length
+      ? {
+          telemetry: nextTelemetry,
+          'extra.telemetry': nextTelemetry,
+        }
+      : {};
+
+    if (typeof nextTelemetry.network !== 'undefined') updates['extra.network'] = nextTelemetry.network;
+    if (typeof nextTelemetry.health !== 'undefined') updates['extra.health'] = nextTelemetry.health;
+    if (typeof nextTelemetry.permissions !== 'undefined')
+      updates['extra.permissions'] = nextTelemetry.permissions;
+    if (typeof nextTelemetry.alerts !== 'undefined') updates['extra.alerts'] = nextTelemetry.alerts;
+
+    try {
+      await snapshot.ref.collection('events').doc(eventId).set(enriched);
+      await snapshot.ref.set(
+        {
+          ...updates,
+          ...telemetryUpdates,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Failed to persist command event', err);
+      return respondAck(ack, { ok: false, err: 'store-failed' });
+    }
+
+    await emitSessionUpdated(sessionId);
 
     respondAck(ack, { ok: true });
   });
 
-  socket.on('session:telemetry', (payload = {}, ack) => {
+  socket.on('session:telemetry', async (payload = {}, ack) => {
     const sessionId = normalizeSessionId(payload.sessionId);
     if (!sessionId) {
       return respondAck(ack, { ok: false, err: 'bad-payload' });
     }
 
-    const session = sessions.get(sessionId);
-    if (!session) {
+    const snapshot = await getSessionSnapshot(sessionId);
+    if (!snapshot) {
       return respondAck(ack, { ok: false, err: 'session-not-found' });
     }
 
     const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : {};
     const ts = Date.now();
+    const from = ensureString(payload.from || '', '');
     const status = {
       sessionId,
-      from: ensureString(payload.from || '', ''),
+      from,
       data,
       ts,
     };
 
-    session.telemetry = { ...(session.telemetry || {}), ...data, updatedAt: ts };
-    session.extra = session.extra || {};
-    session.extra.telemetry = session.telemetry;
-    if (typeof data.network !== 'undefined') session.extra.network = ensureString(data.network, session.extra.network || '');
-    if (typeof data.health !== 'undefined') session.extra.health = ensureString(data.health, session.extra.health || '');
-    if (typeof data.permissions !== 'undefined')
-      session.extra.permissions = ensureString(data.permissions, session.extra.permissions || '');
-    if (typeof data.alerts !== 'undefined') session.extra.alerts = ensureString(data.alerts, session.extra.alerts || '');
-    sessions.set(sessionId, session);
+    const mergedTelemetry = {
+      ...(snapshot.data()?.telemetry || {}),
+      ...data,
+      updatedAt: ts,
+    };
+
+    const eventId = `${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const telemetryEvent = {
+      id: eventId,
+      sessionId,
+      kind: 'telemetry',
+      type: 'telemetry',
+      data,
+      by: from || 'unknown',
+      ts,
+    };
+
+    const updates = {
+      telemetry: mergedTelemetry,
+      'extra.telemetry': mergedTelemetry,
+      updatedAt: ts,
+    };
+    if (typeof data.network !== 'undefined') updates['extra.network'] = ensureString(data.network, '');
+    if (typeof data.health !== 'undefined') updates['extra.health'] = ensureString(data.health, '');
+    if (typeof data.permissions !== 'undefined') updates['extra.permissions'] = ensureString(data.permissions, '');
+    if (typeof data.alerts !== 'undefined') updates['extra.alerts'] = ensureString(data.alerts, '');
+
+    try {
+      await snapshot.ref.collection('events').doc(eventId).set(telemetryEvent);
+      await snapshot.ref.set(updates, { merge: true });
+    } catch (err) {
+      console.error('Failed to persist telemetry event', err);
+      return respondAck(ack, { ok: false, err: 'store-failed' });
+    }
 
     io.to(`s:${sessionId}`).emit('session:status', status);
-    io.emit('session:updated', session);
+    await emitSessionUpdated(sessionId);
 
     respondAck(ack, { ok: true });
   });
@@ -318,16 +558,26 @@ io.on('connection', (socket) => {
 
   ['signal:offer', 'signal:answer', 'signal:candidate'].forEach(relaySignal);
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     connectionIndex.delete(socket.id);
-    // se o cliente desconectar com pedido em fila, remove
-    for (const [id, r] of requests) {
-      if (r.clientId === socket.id && r.state === 'queued') {
-        requests.delete(id);
-        io.emit('queue:updated', { requestId: id, state: 'removed' });
+    try {
+      const snapshot = await requestsCollection.where('clientId', '==', socket.id).get();
+      const batch = db.batch();
+      let hasDeletes = false;
+      snapshot.docs.forEach((doc) => {
+        const data = doc.data() || {};
+        if (data.state === 'queued') {
+          batch.delete(doc.ref);
+          io.emit('queue:updated', { requestId: doc.id, state: 'removed' });
+          hasDeletes = true;
+        }
+      });
+      if (hasDeletes) {
+        await batch.commit();
       }
+    } catch (err) {
+      console.error('Failed to cleanup queued requests on disconnect', err);
     }
-    // se sair de uma sessão ativa, avisa o outro lado
     if (socket.data?.room) {
       socket.to(socket.data.room).emit('peer-left');
     }
@@ -335,201 +585,313 @@ io.on('connection', (socket) => {
 });
 
 // ====== HTTP API (usada pelo central.html)
-app.get('/api/requests', (req, res) => {
-  const status = (req.query.status || '').toLowerCase();
-  let list = Array.from(requests.values());
-  if (status) list = list.filter(r => r.state === status);
-  // Ordena por mais antigo primeiro
-  list.sort((a, b) => a.createdAt - b.createdAt);
-  res.json(list.map(r => ({
-    requestId: r.requestId,
-    clientName: r.clientName,
-    brand: r.brand,
-    model: r.model,
-    createdAt: r.createdAt,
-    state: r.state
-  })));
+app.get('/api/requests', async (req, res) => {
+  try {
+    const status = ensureString(req.query.status || '', '').toLowerCase();
+    let snapshot;
+    if (status) {
+      snapshot = await requestsCollection.where('state', '==', status).get();
+    } else {
+      snapshot = await requestsCollection.get();
+    }
+    const list = snapshot.docs.map((doc) => {
+      const data = doc.data() || {};
+      return {
+        requestId: doc.id,
+        clientName: data.clientName || 'Cliente',
+        brand: data.brand || null,
+        model: data.model || null,
+        createdAt: data.createdAt || null,
+        state: data.state || 'queued',
+      };
+    });
+    list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    res.json(list);
+  } catch (err) {
+    console.error('Failed to fetch requests', err);
+    res.status(500).json({ error: 'firestore_error' });
+  }
 });
 
 // Aceitar um request -> cria sessionId, notifica cliente
-app.post('/api/requests/:id/accept', (req, res) => {
+app.post('/api/requests/:id/accept', async (req, res) => {
   const id = req.params.id;
-  const r = requests.get(id);
-  if (!r || r.state !== 'queued') {
-    return res.status(404).json({ error: 'request_not_found_or_already_taken' });
+  try {
+    const requestRef = requestsCollection.doc(id);
+    const snapshot = await requestRef.get();
+    if (!snapshot.exists) {
+      return res.status(404).json({ error: 'request_not_found_or_already_taken' });
+    }
+
+    const request = snapshot.data() || {};
+    if (request.state && request.state !== 'queued') {
+      return res.status(404).json({ error: 'request_not_found_or_already_taken' });
+    }
+
+    const sessionId = nanoid().toUpperCase();
+    const now = Date.now();
+    const techName = req.body && req.body.techName ? ensureString(req.body.techName, 'Técnico') : 'Técnico';
+    const techId = req.body && req.body.techId ? ensureString(req.body.techId, '') || null : null;
+    const techUid = req.body && req.body.techUid ? ensureString(req.body.techUid, '') || null : techId;
+    const baseExtra = typeof request.extra === 'object' && request.extra !== null ? { ...request.extra } : {};
+    const baseTelemetry =
+      typeof baseExtra.telemetry === 'object' && baseExtra.telemetry !== null ? { ...baseExtra.telemetry } : {};
+    const sessionData = {
+      sessionId,
+      requestId: id,
+      clientId: request.clientId || null,
+      clientUid: request.clientUid || null,
+      techName,
+      techId,
+      techUid,
+      clientName: request.clientName || 'Cliente',
+      brand: request.brand || null,
+      model: request.model || null,
+      osVersion: request.osVersion || null,
+      plan: request.plan || null,
+      issue: request.issue || null,
+      requestedAt: request.createdAt || now,
+      acceptedAt: now,
+      waitTimeMs: now - (request.createdAt || now),
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+      telemetry: baseTelemetry,
+      extra: { ...baseExtra, telemetry: baseTelemetry },
+    };
+
+    await sessionsCollection.doc(sessionId).set(sessionData);
+    await requestRef.delete();
+
+    if (request.clientId) {
+      try {
+        io.to(request.clientId).emit('support:accepted', { sessionId, techName });
+      } catch (err) {
+        console.error('Failed to emit acceptance to client', err);
+      }
+    }
+
+    io.emit('queue:updated', { requestId: id, state: 'accepted', sessionId });
+    await emitSessionUpdated(sessionId);
+
+    return res.json({ sessionId });
+  } catch (err) {
+    console.error('Failed to accept request', err);
+    return res.status(500).json({ error: 'firestore_error' });
   }
-
-  const sessionId = nanoid().toUpperCase();
-  r.state = 'accepted';
-
-  const now = Date.now();
-  const techName = (req.body && req.body.techName) ? ensureString(req.body.techName, 'Técnico') : 'Técnico';
-  const baseExtra = typeof r.extra === 'object' && r.extra !== null ? { ...r.extra } : {};
-  const chatLog = Array.isArray(baseExtra.chatLog) ? [...baseExtra.chatLog] : [];
-  const commandLog = Array.isArray(baseExtra.commandLog) ? [...baseExtra.commandLog] : [];
-  const telemetry =
-    typeof baseExtra.telemetry === 'object' && baseExtra.telemetry !== null ? { ...baseExtra.telemetry } : {};
-  const session = {
-    sessionId,
-    requestId: id,
-    clientId: r.clientId,
-    techName,
-    clientName: r.clientName,
-    brand: r.brand,
-    model: r.model,
-    osVersion: r.osVersion,
-    plan: r.plan,
-    issue: r.issue,
-    requestedAt: r.createdAt,
-    acceptedAt: now,
-    waitTimeMs: now - r.createdAt,
-    status: 'active',
-    createdAt: now,
-    extra: { ...baseExtra, chatLog, commandLog, telemetry },
-    chatLog,
-    commandLog,
-    telemetry,
-  };
-  sessions.set(sessionId, session);
-
-  // notifica cliente que foi aceito + sessionId
-  io.to(r.clientId).emit('support:accepted', { sessionId, techName });
-
-  // remove da fila visível
-  requests.delete(id);
-  io.emit('queue:updated', { requestId: id, state: 'accepted', sessionId });
-  io.emit('session:updated', session);
-
-  return res.json({ sessionId });
 });
 
 // Recusar/remover um request (apaga da fila e, se quiser, avisa o cliente)
-app.delete('/api/requests/:id', (req, res) => {
+app.delete('/api/requests/:id', async (req, res) => {
   const id = req.params.id;
-  const r = requests.get(id);
-  if (!r) return res.status(204).end();
-  requests.delete(id);
-  try { io.to(r.clientId).emit('support:rejected', { requestId: id }); } catch {}
-  io.emit('queue:updated', { requestId: id, state: 'removed' });
-  res.status(204).end();
+  try {
+    const requestRef = requestsCollection.doc(id);
+    const snapshot = await requestRef.get();
+    if (!snapshot.exists) {
+      return res.status(204).end();
+    }
+    const data = snapshot.data() || {};
+    await requestRef.delete();
+    if (data.clientId) {
+      try {
+        io.to(data.clientId).emit('support:rejected', { requestId: id });
+      } catch (err) {
+        console.error('Failed to emit rejection to client', err);
+      }
+    }
+    io.emit('queue:updated', { requestId: id, state: 'removed' });
+    return res.status(204).end();
+  } catch (err) {
+    console.error('Failed to remove request', err);
+    return res.status(500).json({ error: 'firestore_error' });
+  }
 });
 
 // Debug/saúde
-app.get('/health', (_req, res) => res.json({ ok: true, requests: requests.size, sessions: sessions.size, now: Date.now() }));
-app.get('/api/sessions', (_req, res) => {
-  const list = Array.from(sessions.values()).map((s) => ({
-    sessionId: s.sessionId,
-    requestId: s.requestId,
-    techName: s.techName,
-    clientName: s.clientName,
-    brand: s.brand,
-    model: s.model,
-    osVersion: s.osVersion,
-    plan: s.plan,
-    issue: s.issue,
-    requestedAt: s.requestedAt,
-    acceptedAt: s.acceptedAt,
-    waitTimeMs: s.waitTimeMs,
-    status: s.status,
-    closedAt: s.closedAt || null,
-    handleTimeMs: s.handleTimeMs || null,
-    firstContactResolution: s.firstContactResolution ?? null,
-    npsScore: typeof s.npsScore === 'number' ? s.npsScore : null,
-    outcome: s.outcome || null,
-    symptom: s.symptom || null,
-    solution: s.solution || null,
-    notes: s.notes || null,
-    chatLog: Array.isArray(s.chatLog) ? s.chatLog : Array.isArray(s.extra?.chatLog) ? s.extra.chatLog : [],
-    commandLog: Array.isArray(s.commandLog) ? s.commandLog : Array.isArray(s.extra?.commandLog) ? s.extra.commandLog : [],
-    telemetry: typeof s.telemetry === 'object' && s.telemetry !== null
-      ? s.telemetry
-      : typeof s.extra?.telemetry === 'object' && s.extra.telemetry !== null
-        ? s.extra.telemetry
-        : {},
-    extra: s.extra || {}
-  }));
-  list.sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
-  res.json(list);
+app.get('/health', async (_req, res) => {
+  try {
+    const [requestsSnap, sessionsSnap] = await Promise.all([
+      requestsCollection.get(),
+      sessionsCollection.get(),
+    ]);
+    res.json({ ok: true, requests: requestsSnap.size, sessions: sessionsSnap.size, now: Date.now() });
+  } catch (err) {
+    console.error('Failed to compute health status', err);
+    res.status(500).json({ ok: false, error: 'firestore_error' });
+  }
 });
 
-app.post('/api/sessions/:id/close', (req, res) => {
-  const id = req.params.id;
-  const session = sessions.get(id);
-  if (!session) {
-    return res.status(404).json({ error: 'session_not_found' });
-  }
-  if (session.status === 'closed') {
-    return res.status(409).json({ error: 'session_already_closed' });
-  }
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const limitParam = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isNaN(limitParam) || limitParam <= 0 ? 200 : Math.min(limitParam, 500);
+    const startFilter = toMillis(req.query.start, null);
+    const endFilter = toMillis(req.query.end, null);
+    const techFilterRaw = ensureString(req.query.tech || req.query.techId || '', '');
+    const techFilter = techFilterRaw ? techFilterRaw.toLowerCase() : '';
 
-  const payload = req.body || {};
-  session.status = 'closed';
-  session.closedAt = Date.now();
-  session.outcome = ensureString(payload.outcome || 'resolved', 'resolved');
-  session.symptom = ensureString(payload.symptom || '', '') || null;
-  session.solution = ensureString(payload.solution || '', '') || null;
-  if (payload.notes && typeof payload.notes === 'string') {
-    session.notes = ensureString(payload.notes, '');
-  }
-  if (typeof payload.npsScore !== 'undefined') {
-    const nps = Number(payload.npsScore);
-    if (!Number.isNaN(nps)) {
-      session.npsScore = Math.max(0, Math.min(10, Math.round(nps)));
+    let query = sessionsCollection;
+    if (startFilter !== null) {
+      query = query.where('acceptedAt', '>=', startFilter);
     }
-  }
-  if (typeof payload.firstContactResolution !== 'undefined') {
-    session.firstContactResolution = Boolean(payload.firstContactResolution);
-  }
-  session.handleTimeMs = session.closedAt - (session.acceptedAt || session.createdAt);
+    if (endFilter !== null) {
+      query = query.where('acceptedAt', '<=', endFilter);
+    }
 
-  io.emit('session:updated', session);
+    query = query.orderBy('acceptedAt', 'desc');
+    if (limit) {
+      query = query.limit(limit);
+    }
 
-  res.json({ ok: true });
+    const snapshot = await query.get();
+    let docs = snapshot.docs;
+    if (techFilter) {
+      docs = docs.filter((doc) => {
+        const data = doc.data() || {};
+        const techName = ensureString(data.techName || '', '').toLowerCase();
+        const techId = ensureString(data.techId || '', '').toLowerCase();
+        const techUidValue = ensureString(data.techUid || '', '').toLowerCase();
+        return techName === techFilter || techId === techFilter || techUidValue === techFilter;
+      });
+    }
+
+    const sessions = await Promise.all(
+      docs.map((doc) => buildSessionState(doc.id, { snapshot: doc }))
+    );
+    const sanitized = sessions.filter(Boolean);
+    res.json(sanitized);
+  } catch (err) {
+    console.error('Failed to fetch sessions', err);
+    res.status(500).json({ error: 'firestore_error' });
+  }
 });
 
-app.get('/api/metrics', (_req, res) => {
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const allSessions = Array.from(sessions.values());
-  const todaysSessions = allSessions.filter((s) => (s.acceptedAt || 0) >= startOfDay);
-  const closedToday = todaysSessions.filter((s) => s.status === 'closed');
-  const activeSessions = allSessions.filter((s) => s.status === 'active');
+app.post('/api/sessions/:id/close', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const snapshot = await getSessionSnapshot(id);
+    if (!snapshot) {
+      return res.status(404).json({ error: 'session_not_found' });
+    }
 
-  const waitTimes = todaysSessions.map((s) => s.waitTimeMs).filter((ms) => typeof ms === 'number' && ms >= 0);
-  const averageWaitMs = waitTimes.length ? waitTimes.reduce((a, b) => a + b, 0) / waitTimes.length : null;
+    const session = snapshot.data() || {};
+    if (session.status === 'closed') {
+      return res.status(409).json({ error: 'session_already_closed' });
+    }
 
-  const handleTimes = closedToday
-    .map((s) => s.handleTimeMs)
-    .filter((ms) => typeof ms === 'number' && ms >= 0);
-  const averageHandleMs = handleTimes.length ? handleTimes.reduce((a, b) => a + b, 0) / handleTimes.length : null;
+    const payload = req.body || {};
+    const closedAt = Date.now();
+    const updates = {
+      status: 'closed',
+      closedAt,
+      outcome: ensureString(payload.outcome || session.outcome || 'resolved', 'resolved'),
+      symptom: ensureString(payload.symptom || session.symptom || '', '') || null,
+      solution: ensureString(payload.solution || session.solution || '', '') || null,
+      handleTimeMs: closedAt - (session.acceptedAt || session.createdAt || closedAt),
+      updatedAt: closedAt,
+    };
 
-  const fcrValues = closedToday
-    .filter((s) => typeof s.firstContactResolution === 'boolean')
-    .map((s) => (s.firstContactResolution ? 1 : 0));
-  const fcrPercentage = fcrValues.length
-    ? Math.round((fcrValues.reduce((a, b) => a + b, 0) / fcrValues.length) * 100)
-    : null;
+    if (payload.notes && typeof payload.notes === 'string') {
+      updates.notes = ensureString(payload.notes, '');
+    }
+    if (typeof payload.npsScore !== 'undefined') {
+      const nps = Number(payload.npsScore);
+      if (!Number.isNaN(nps)) {
+        updates.npsScore = Math.max(0, Math.min(10, Math.round(nps)));
+      }
+    }
+    if (typeof payload.firstContactResolution !== 'undefined') {
+      updates.firstContactResolution = Boolean(payload.firstContactResolution);
+    }
 
-  const npsScores = closedToday
-    .map((s) => (typeof s.npsScore === 'number' ? s.npsScore : null))
-    .filter((n) => n !== null && !Number.isNaN(n));
-  let nps = null;
-  if (npsScores.length) {
-    const promoters = npsScores.filter((score) => score >= 9).length;
-    const detractors = npsScores.filter((score) => score <= 6).length;
-    nps = Math.round(((promoters - detractors) / npsScores.length) * 100);
+    await snapshot.ref.set(updates, { merge: true });
+    await emitSessionUpdated(id);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Failed to close session', err);
+    return res.status(500).json({ error: 'firestore_error' });
   }
+});
 
-  res.json({
-    attendancesToday: todaysSessions.length,
-    activeSessions: activeSessions.length,
-    averageWaitMs,
-    averageHandleMs,
-    fcrPercentage,
-    nps,
-    queueSize: requests.size,
-    lastUpdated: Date.now(),
-  });
+app.get('/api/metrics', async (req, res) => {
+  try {
+    const techFilterRaw = ensureString(req.query.tech || req.query.techId || '', '');
+    const techFilter = techFilterRaw ? techFilterRaw.toLowerCase() : '';
+    const startFilter = toMillis(req.query.start, null);
+    const endFilter = toMillis(req.query.end, null);
+
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const rangeStart = startFilter !== null ? startFilter : defaultStart;
+    let query = sessionsCollection.where('acceptedAt', '>=', rangeStart);
+    if (endFilter !== null) {
+      query = query.where('acceptedAt', '<=', endFilter);
+    }
+    query = query.orderBy('acceptedAt', 'desc');
+
+    const snapshot = await query.get();
+    let sessions = snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) }));
+    if (techFilter) {
+      sessions = sessions.filter((session) => {
+        const techName = ensureString(session.techName || '', '').toLowerCase();
+        const techId = ensureString(session.techId || '', '').toLowerCase();
+        const techUidValue = ensureString(session.techUid || '', '').toLowerCase();
+        return techName === techFilter || techId === techFilter || techUidValue === techFilter;
+      });
+    }
+
+    if (endFilter !== null) {
+      sessions = sessions.filter((session) => (session.acceptedAt || 0) <= endFilter);
+    }
+
+    const todaysSessions = sessions;
+    const closedSessions = todaysSessions.filter((s) => s.status === 'closed');
+    const activeSessions = todaysSessions.filter((s) => s.status === 'active');
+
+    const waitTimes = todaysSessions
+      .map((s) => s.waitTimeMs)
+      .filter((ms) => typeof ms === 'number' && ms >= 0);
+    const averageWaitMs = waitTimes.length ? waitTimes.reduce((a, b) => a + b, 0) / waitTimes.length : null;
+
+    const handleTimes = closedSessions
+      .map((s) => s.handleTimeMs)
+      .filter((ms) => typeof ms === 'number' && ms >= 0);
+    const averageHandleMs = handleTimes.length ? handleTimes.reduce((a, b) => a + b, 0) / handleTimes.length : null;
+
+    const fcrValues = closedSessions
+      .filter((s) => typeof s.firstContactResolution === 'boolean')
+      .map((s) => (s.firstContactResolution ? 1 : 0));
+    const fcrPercentage = fcrValues.length
+      ? Math.round((fcrValues.reduce((a, b) => a + b, 0) / fcrValues.length) * 100)
+      : null;
+
+    const npsScores = closedSessions
+      .map((s) => (typeof s.npsScore === 'number' ? s.npsScore : null))
+      .filter((n) => n !== null && !Number.isNaN(n));
+    let nps = null;
+    if (npsScores.length) {
+      const promoters = npsScores.filter((score) => score >= 9).length;
+      const detractors = npsScores.filter((score) => score <= 6).length;
+      nps = Math.round(((promoters - detractors) / npsScores.length) * 100);
+    }
+
+    const queueSnapshot = await requestsCollection.where('state', '==', 'queued').get();
+
+    res.json({
+      attendancesToday: todaysSessions.length,
+      activeSessions: activeSessions.length,
+      averageWaitMs,
+      averageHandleMs,
+      fcrPercentage,
+      nps,
+      queueSize: queueSnapshot.size,
+      lastUpdated: Date.now(),
+    });
+  } catch (err) {
+    console.error('Failed to compute metrics', err);
+    res.status(500).json({ error: 'firestore_error' });
+  }
 });
 
 // Start

@@ -151,6 +151,7 @@ const dom = {
   techIdentity: document.querySelector('.tech-identity'),
   techInitials: document.getElementById('techInitials'),
   techName: document.getElementById('techName'),
+  techDataset: document.body,
   topbarTechName: document.getElementById('topbarTechName'),
   chatThread: document.getElementById('chatThread'),
   chatForm: document.getElementById('chatForm'),
@@ -170,6 +171,19 @@ const dom = {
   closureFcr: document.getElementById('closureFcr'),
   closureSubmit: document.getElementById('closureSubmit'),
   toast: document.getElementById('toast'),
+};
+
+const getTechDatasetElement = () => dom.techIdentity || dom.techDataset;
+
+const getTechDataset = () => getTechDatasetElement()?.dataset || {};
+
+const updateTechDataset = (entries = {}) => {
+  const target = getTechDatasetElement();
+  if (!target) return;
+  Object.entries(entries).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    target.dataset[key] = String(value);
+  });
 };
 
 const showToast = (message) => {
@@ -916,7 +930,7 @@ const ingestChatMessage = (message, { isSelf = false } = {}) => {
     const session = state.sessions.find((s) => s.sessionId === message.sessionId);
     const isTech = normalized.from === 'tech';
     addChatMessage({
-      author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session?.clientName || normalized.from,
+      author: isTech ? (getTechDataset().techName || 'Você') : session?.clientName || normalized.from,
       text: normalized.text,
       kind: isTech ? 'self' : 'client',
       ts: normalized.ts,
@@ -1278,7 +1292,7 @@ const renderChatForSession = () => {
     const history = state.chatBySession.get(session.sessionId) || [];
     const messages = history.slice(-CHAT_RENDER_LIMIT);
     const fragment = document.createDocumentFragment();
-    const techName = dom.techIdentity?.dataset?.techName || 'Você';
+    const techName = getTechDataset().techName || 'Você';
     if (!messages.length) {
       fragment.appendChild(
         createChatEntryElement({
@@ -1767,12 +1781,11 @@ const renderQueue = () => {
 };
 
 const updateTechIdentity = () => {
-  if (!dom.techIdentity) return;
   const tech = getTechProfile();
   const name = tech.name || 'Técnico';
-  dom.techName.textContent = name;
-  dom.topbarTechName.textContent = name;
-  dom.techInitials.textContent = computeInitials(name);
+  if (dom.techName) dom.techName.textContent = name;
+  if (dom.topbarTechName) dom.topbarTechName.textContent = name;
+  if (dom.techInitials) dom.techInitials.textContent = computeInitials(name);
 };
 
 const renderSessions = () => {

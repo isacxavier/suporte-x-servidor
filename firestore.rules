@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return isSignedIn() ? (request.auth.token.role != null ? request.auth.token.role : null) : null;
+    }
+
+    function isTech() {
+      return role() == 'tech' || (isSignedIn() && (request.auth.token.tech == true));
+    }
+
+    function isClient() {
+      return role() == 'client' || (isSignedIn() && (request.auth.token.client == true));
+    }
+
+    function sessionDoc(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId));
+    }
+
+    function sessionData(sessionId) {
+      return sessionDoc(sessionId).data;
+    }
+
+    function isTechForSession(sessionId) {
+      return isTech() && sessionDoc(sessionId).exists && (
+        sessionData(sessionId).techUid == request.auth.uid ||
+        sessionData(sessionId).techId == request.auth.uid
+      );
+    }
+
+    function isClientForSession(sessionId) {
+      return isClient() && sessionDoc(sessionId).exists && (
+        sessionData(sessionId).clientUid == request.auth.uid ||
+        sessionData(sessionId).clientId == request.auth.uid
+      );
+    }
+
+    function canAccessSession(sessionId) {
+      return isTechForSession(sessionId) || isClientForSession(sessionId);
+    }
+
+    match /requests/{requestId} {
+      allow create: if isClient() && request.resource.data.clientUid == request.auth.uid;
+      allow read: if isTech() || (isClient() && resource.data.clientUid == request.auth.uid);
+      allow delete: if isTech() || (isClient() && resource.data.clientUid == request.auth.uid);
+      allow update: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if canAccessSession(sessionId);
+      allow create: if isTech();
+      allow update: if isTechForSession(sessionId);
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if canAccessSession(sessionId);
+        allow create: if canAccessSession(sessionId);
+        allow update, delete: if false;
+      }
+
+      match /events/{eventId} {
+        allow read: if canAccessSession(sessionId);
+        allow create: if canAccessSession(sessionId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

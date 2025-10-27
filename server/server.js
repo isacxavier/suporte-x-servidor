@@ -41,6 +41,132 @@ const respondAck = (ack, payload) => {
 let firebaseProjectId = null;
 let firebaseClientConfigCache = undefined;
 
+const resolveProjectIdFromEnv = () => {
+  const candidates = [
+    ensureString(process.env.CENTRAL_FIREBASE_PROJECT_ID || '', ''),
+    ensureString(process.env.FIREBASE_PROJECT_ID || '', ''),
+    ensureString(process.env.GCLOUD_PROJECT || '', ''),
+    ensureString(process.env.GOOGLE_CLOUD_PROJECT || '', ''),
+    ensureString(process.env.GOOGLE_PROJECT_ID || '', ''),
+    ensureString(process.env.GCP_PROJECT || '', ''),
+  ].filter(Boolean);
+
+  return candidates.length ? candidates[0] : null;
+};
+
+const parseJson = (raw) => {
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn('Failed to parse JSON value', err);
+    return null;
+  }
+};
+
+const buildServiceAccountFromEnv = () => {
+  const directJson = ensureString(process.env.FIREBASE_SERVICE_ACCOUNT || '', '');
+  if (directJson) {
+    const parsed = parseJson(directJson);
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+  }
+
+  const base64Json = ensureString(
+    process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || process.env.FIREBASE_SERVICE_ACCOUNT_B64 || '',
+    ''
+  );
+  if (base64Json) {
+    try {
+      const decoded = Buffer.from(base64Json, 'base64').toString('utf8');
+      const parsed = parseJson(decoded);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    } catch (err) {
+      console.warn('Failed to decode FIREBASE_SERVICE_ACCOUNT_BASE64', err);
+    }
+  }
+
+  const projectIdCandidate = resolveProjectIdFromEnv();
+  let projectId = projectIdCandidate || null;
+  let clientEmail = ensureString(
+    process.env.FIREBASE_CLIENT_EMAIL || process.env.GOOGLE_CLIENT_EMAIL || process.env.GCP_CLIENT_EMAIL || '',
+    ''
+  );
+  let privateKeyRaw = ensureString(
+    process.env.FIREBASE_PRIVATE_KEY || process.env.GOOGLE_PRIVATE_KEY || process.env.GCP_PRIVATE_KEY || '',
+    ''
+  );
+
+  if (privateKeyRaw && privateKeyRaw.trim().startsWith('{')) {
+    const parsedPrivate = parseJson(privateKeyRaw);
+    if (parsedPrivate && typeof parsedPrivate === 'object') {
+      if (typeof parsedPrivate.private_key === 'string') {
+        privateKeyRaw = parsedPrivate.private_key;
+      }
+      if (!clientEmail && typeof parsedPrivate.client_email === 'string') {
+        clientEmail = parsedPrivate.client_email;
+      }
+      if (!projectId && typeof parsedPrivate.project_id === 'string') {
+        projectId = parsedPrivate.project_id;
+      }
+    }
+  }
+
+  if (privateKeyRaw) {
+    privateKeyRaw = privateKeyRaw.replace(/\r/g, '').replace(/\\n/g, '\n');
+  }
+
+  if (projectId && clientEmail && privateKeyRaw) {
+    const serviceAccount = {
+      project_id: projectId,
+      client_email: clientEmail,
+      private_key: privateKeyRaw,
+    };
+
+    const optionalFieldMap = {
+      private_key_id: [
+        'FIREBASE_PRIVATE_KEY_ID',
+        'GOOGLE_PRIVATE_KEY_ID',
+        'GCP_PRIVATE_KEY_ID',
+      ],
+      client_id: ['FIREBASE_CLIENT_ID', 'GOOGLE_CLIENT_ID', 'GCP_CLIENT_ID'],
+      token_uri: ['FIREBASE_TOKEN_URI', 'GOOGLE_TOKEN_URI', 'GCP_TOKEN_URI'],
+      auth_uri: ['FIREBASE_AUTH_URI', 'GOOGLE_AUTH_URI', 'GCP_AUTH_URI'],
+      auth_provider_x509_cert_url: [
+        'FIREBASE_AUTH_PROVIDER_X509_CERT_URL',
+        'GOOGLE_AUTH_PROVIDER_X509_CERT_URL',
+        'GCP_AUTH_PROVIDER_X509_CERT_URL',
+      ],
+      client_x509_cert_url: [
+        'FIREBASE_CLIENT_X509_CERT_URL',
+        'GOOGLE_CLIENT_X509_CERT_URL',
+        'GCP_CLIENT_X509_CERT_URL',
+      ],
+      universe_domain: [
+        'FIREBASE_UNIVERSE_DOMAIN',
+        'GOOGLE_UNIVERSE_DOMAIN',
+        'GCP_UNIVERSE_DOMAIN',
+      ],
+    };
+
+    Object.entries(optionalFieldMap).forEach(([field, envKeys]) => {
+      for (const envKey of envKeys) {
+        const value = ensureString(process.env[envKey] || '', '');
+        if (value) {
+          serviceAccount[field] = value;
+          break;
+        }
+      }
+    });
+
+    return serviceAccount;
+  }
+
+  return null;
+};
+
 const resolveFirebaseClientConfig = () => {
   if (firebaseClientConfigCache !== undefined) {
     return firebaseClientConfigCache;
@@ -50,6 +176,26 @@ const resolveFirebaseClientConfig = () => {
     ensureString(process.env.CENTRAL_FIREBASE_CONFIG || '', ''),
     ensureString(process.env.FIREBASE_CLIENT_CONFIG || '', ''),
   ].filter(Boolean);
+
+  const base64Sources = [
+    ensureString(
+      process.env.CENTRAL_FIREBASE_CONFIG_BASE64 || process.env.CENTRAL_FIREBASE_CONFIG_B64 || '',
+      ''
+    ),
+    ensureString(
+      process.env.FIREBASE_CLIENT_CONFIG_BASE64 || process.env.FIREBASE_CLIENT_CONFIG_B64 || '',
+      ''
+    ),
+  ].filter(Boolean);
+
+  base64Sources.forEach((encoded) => {
+    try {
+      const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+      jsonSources.push(decoded);
+    } catch (err) {
+      console.warn('Failed to decode base64 Firebase client config', err);
+    }
+  });
 
   for (const source of jsonSources) {
     const parsed = parseJsonObject(source);
@@ -92,35 +238,60 @@ const resolveFirebaseClientConfig = () => {
 const initializeFirebase = () => {
   if (admin.apps.length) return admin.app();
 
-  const serviceAccountJson = ensureString(process.env.FIREBASE_SERVICE_ACCOUNT || '', '');
-  const projectId = ensureString(process.env.FIREBASE_PROJECT_ID || '', '') || undefined;
+  const serviceAccount = buildServiceAccountFromEnv();
+  const projectIdFromEnv = resolveProjectIdFromEnv();
+
+  firebaseProjectId =
+    (serviceAccount && ensureString(serviceAccount.project_id || '', '')) ||
+    projectIdFromEnv ||
+    firebaseProjectId;
 
   try {
-    if (serviceAccountJson) {
-      const serviceAccount = JSON.parse(serviceAccountJson);
-      firebaseProjectId = serviceAccount.project_id || projectId || firebaseProjectId;
+    if (serviceAccount) {
       return admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
-        projectId: firebaseProjectId,
+        projectId: firebaseProjectId || undefined,
       });
     }
   } catch (err) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT', err);
+    console.error('Failed to initialize Firebase with provided service account', err);
   }
 
-  firebaseProjectId = projectId || firebaseProjectId || null;
-  return admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
-    projectId: firebaseProjectId || undefined,
-  });
+  try {
+    return admin.initializeApp({
+      credential: admin.credential.applicationDefault(),
+      projectId: firebaseProjectId || undefined,
+    });
+  } catch (err) {
+    console.error('Failed to initialize Firebase with application default credentials', err);
+    return null;
+  }
 };
 
 const firebaseApp = initializeFirebase();
-const db = firebaseApp.firestore();
-db.settings({ ignoreUndefinedProperties: true });
-const FieldValue = admin.firestore.FieldValue;
-const sessionsCollection = db.collection('sessions');
-const requestsCollection = db.collection('requests');
+let db = null;
+let FieldValue = null;
+let sessionsCollection = null;
+let requestsCollection = null;
+
+if (firebaseApp) {
+  try {
+    db = firebaseApp.firestore();
+    db.settings({ ignoreUndefinedProperties: true });
+    FieldValue = admin.firestore.FieldValue;
+    sessionsCollection = db.collection('sessions');
+    requestsCollection = db.collection('requests');
+  } catch (err) {
+    console.error('Failed to initialize Firestore', err);
+    db = null;
+    sessionsCollection = null;
+    requestsCollection = null;
+  }
+} else {
+  console.warn('Firebase Admin SDK was not initialized. Firestore features are disabled.');
+}
+
+const isFirestoreReady = () => Boolean(db && sessionsCollection && requestsCollection);
 
 // ===== Básico
 const app = express();
@@ -203,12 +374,14 @@ const nanoid = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 const connectionIndex = new Map();
 
 const getRequestById = async (requestId) => {
+  if (!requestsCollection) return null;
   const snapshot = await requestsCollection.doc(requestId).get();
   if (!snapshot.exists) return null;
   return { requestId: snapshot.id, ...snapshot.data() };
 };
 
 const getSessionSnapshot = async (sessionId) => {
+  if (!sessionsCollection) return null;
   const normalized = normalizeSessionId(sessionId);
   if (!normalized) return null;
   const snapshot = await sessionsCollection.doc(normalized).get();
@@ -217,6 +390,7 @@ const getSessionSnapshot = async (sessionId) => {
 };
 
 const fetchMessages = async (sessionRef, limit = 50) => {
+  if (!sessionRef) return [];
   const snapshot = await sessionRef.collection('messages').orderBy('ts', 'desc').limit(limit).get();
   const messages = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   messages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -224,6 +398,7 @@ const fetchMessages = async (sessionRef, limit = 50) => {
 };
 
 const fetchEvents = async (sessionRef, limit = 100) => {
+  if (!sessionRef) return [];
   const snapshot = await sessionRef.collection('events').orderBy('ts', 'desc').limit(limit).get();
   const events = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -343,6 +518,12 @@ io.on('connection', (socket) => {
   // 1) CLIENTE cria um pedido de suporte (fila real)
   // payload: { clientName?, brand?, model? }
   socket.on('support:request', async (payload = {}) => {
+    if (!requestsCollection) {
+      console.error('Firestore not configured. Cannot enqueue support request.');
+      socket.emit('support:error', { error: 'firestore_unavailable' });
+      return;
+    }
+
     const requestId = nanoid().toUpperCase();
     const now = Date.now();
     const requestData = {
@@ -648,23 +829,27 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     connectionIndex.delete(socket.id);
-    try {
-      const snapshot = await requestsCollection.where('clientId', '==', socket.id).get();
-      const batch = db.batch();
-      let hasDeletes = false;
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data() || {};
-        if (data.state === 'queued') {
-          batch.delete(doc.ref);
-          io.emit('queue:updated', { requestId: doc.id, state: 'removed' });
-          hasDeletes = true;
+    if (requestsCollection && db) {
+      try {
+        const snapshot = await requestsCollection.where('clientId', '==', socket.id).get();
+        const batch = db.batch();
+        let hasDeletes = false;
+        snapshot.docs.forEach((doc) => {
+          const data = doc.data() || {};
+          if (data.state === 'queued') {
+            batch.delete(doc.ref);
+            io.emit('queue:updated', { requestId: doc.id, state: 'removed' });
+            hasDeletes = true;
+          }
+        });
+        if (hasDeletes) {
+          await batch.commit();
         }
-      });
-      if (hasDeletes) {
-        await batch.commit();
+      } catch (err) {
+        console.error('Failed to cleanup queued requests on disconnect', err);
       }
-    } catch (err) {
-      console.error('Failed to cleanup queued requests on disconnect', err);
+    } else {
+      console.warn('Firestore not configured. Skipping queued request cleanup on disconnect.');
     }
     if (socket.data?.room) {
       socket.to(socket.data.room).emit('peer-left');
@@ -674,6 +859,10 @@ io.on('connection', (socket) => {
 
 // ====== HTTP API (usada pelo central.html)
 app.get('/api/requests', async (req, res) => {
+  if (!requestsCollection) {
+    console.error('Firestore not configured. Cannot list requests.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const status = ensureString(req.query.status || '', '').toLowerCase();
     let snapshot;
@@ -704,6 +893,10 @@ app.get('/api/requests', async (req, res) => {
 // Aceitar um request -> cria sessionId, notifica cliente
 app.post('/api/requests/:id/accept', async (req, res) => {
   const id = req.params.id;
+  if (!requestsCollection || !sessionsCollection) {
+    console.error('Firestore not configured. Cannot accept request.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const requestRef = requestsCollection.doc(id);
     const snapshot = await requestRef.get();
@@ -772,6 +965,10 @@ app.post('/api/requests/:id/accept', async (req, res) => {
 // Recusar/remover um request (apaga da fila e, se quiser, avisa o cliente)
 app.delete('/api/requests/:id', async (req, res) => {
   const id = req.params.id;
+  if (!requestsCollection) {
+    console.error('Firestore not configured. Cannot remove request.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const requestRef = requestsCollection.doc(id);
     const snapshot = await requestRef.get();
@@ -797,6 +994,9 @@ app.delete('/api/requests/:id', async (req, res) => {
 
 // Debug/saúde
 app.get('/health', async (_req, res) => {
+  if (!isFirestoreReady()) {
+    return res.status(503).json({ ok: false, error: 'firestore_unavailable' });
+  }
   try {
     const [requestsSnap, sessionsSnap] = await Promise.all([
       requestsCollection.get(),
@@ -810,6 +1010,10 @@ app.get('/health', async (_req, res) => {
 });
 
 app.get('/api/sessions', async (req, res) => {
+  if (!sessionsCollection) {
+    console.error('Firestore not configured. Cannot list sessions.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const limitParam = Number.parseInt(req.query.limit, 10);
     const limit = Number.isNaN(limitParam) || limitParam <= 0 ? 200 : Math.min(limitParam, 500);
@@ -856,6 +1060,10 @@ app.get('/api/sessions', async (req, res) => {
 
 app.post('/api/sessions/:id/close', async (req, res) => {
   const id = req.params.id;
+  if (!sessionsCollection) {
+    console.error('Firestore not configured. Cannot close session.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const snapshot = await getSessionSnapshot(id);
     if (!snapshot) {
@@ -903,6 +1111,10 @@ app.post('/api/sessions/:id/close', async (req, res) => {
 });
 
 app.get('/api/metrics', async (req, res) => {
+  if (!sessionsCollection || !requestsCollection) {
+    console.error('Firestore not configured. Cannot compute metrics.');
+    return res.status(503).json({ error: 'firestore_unavailable' });
+  }
   try {
     const techFilterRaw = ensureString(req.query.tech || req.query.techId || '', '');
     const techFilter = techFilterRaw ? techFilterRaw.toLowerCase() : '';

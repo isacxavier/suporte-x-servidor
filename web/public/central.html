@@ -46,6 +46,7 @@
           <div class="section-title">Fila de chamados</div>
           <div class="queue-list" id="queue" aria-live="polite"></div>
           <div class="empty-state muted small" id="queueEmpty" hidden>Nenhum chamado aguardando atendimento.</div>
+          <button class="queue-retry-btn" id="queueRetry" type="button" hidden>Recarregar</button>
         </div>
         <div>
           <div class="section-title">Filtros rápidos</div>
@@ -234,6 +235,7 @@
         </main>
       </div>
     </div>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/common.js"></script>
     <script src="/central-config.js"></script>

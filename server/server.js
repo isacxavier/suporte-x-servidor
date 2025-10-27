@@ -4,7 +4,8 @@ const http = require('http');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const { customAlphabet } = require('nanoid');
-const admin = require('firebase-admin');
+const { initializeApp, cert, getApp, getApps, applicationDefault } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 
 const ensureString = (value, fallback = '') => {
   if (typeof value === 'string') return value.slice(0, 256);
@@ -49,6 +50,7 @@ const resolveProjectIdFromEnv = () => {
     ensureString(process.env.GOOGLE_CLOUD_PROJECT || '', ''),
     ensureString(process.env.GOOGLE_PROJECT_ID || '', ''),
     ensureString(process.env.GCP_PROJECT || '', ''),
+    ensureString(process.env.GCP_PROJECT_ID || '', ''),
   ].filter(Boolean);
 
   return candidates.length ? candidates[0] : null;
@@ -64,6 +66,19 @@ const parseJson = (raw) => {
 };
 
 const buildServiceAccountFromEnv = () => {
+  const gcpServiceAccountBase64 = ensureString(process.env.GCP_SA_KEY_B64 || '', '');
+  if (gcpServiceAccountBase64) {
+    try {
+      const decoded = Buffer.from(gcpServiceAccountBase64, 'base64').toString('utf8');
+      const parsed = parseJson(decoded);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    } catch (err) {
+      console.error('Failed to decode GCP_SA_KEY_B64', err);
+    }
+  }
+
   const directJson = ensureString(process.env.FIREBASE_SERVICE_ACCOUNT || '', '');
   if (directJson) {
     const parsed = parseJson(directJson);
@@ -236,30 +251,40 @@ const resolveFirebaseClientConfig = () => {
 };
 
 const initializeFirebase = () => {
-  if (admin.apps.length) return admin.app();
+  try {
+    if (getApps().length) return getApp();
+  } catch (err) {
+    console.error('Failed to retrieve existing Firebase app', err);
+  }
 
   const serviceAccount = buildServiceAccountFromEnv();
   const projectIdFromEnv = resolveProjectIdFromEnv();
+  const explicitProjectId = ensureString(process.env.GCP_PROJECT_ID || '', '');
 
   firebaseProjectId =
+    explicitProjectId ||
     (serviceAccount && ensureString(serviceAccount.project_id || '', '')) ||
     projectIdFromEnv ||
     firebaseProjectId;
 
-  try {
-    if (serviceAccount) {
-      return admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+  if (serviceAccount) {
+    try {
+      return initializeApp({
+        credential: cert(serviceAccount),
         projectId: firebaseProjectId || undefined,
       });
+    } catch (err) {
+      console.error('Failed to initialize Firebase with provided service account', err);
     }
-  } catch (err) {
-    console.error('Failed to initialize Firebase with provided service account', err);
   }
 
+  console.warn(
+    'Firebase service account credentials were not provided. Attempting application default credentials.'
+  );
+
   try {
-    return admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
+    return initializeApp({
+      credential: applicationDefault(),
       projectId: firebaseProjectId || undefined,
     });
   } catch (err) {
@@ -270,28 +295,56 @@ const initializeFirebase = () => {
 
 const firebaseApp = initializeFirebase();
 let db = null;
-let FieldValue = null;
-let sessionsCollection = null;
-let requestsCollection = null;
 
 if (firebaseApp) {
   try {
-    db = firebaseApp.firestore();
+    db = getFirestore(firebaseApp);
     db.settings({ ignoreUndefinedProperties: true });
-    FieldValue = admin.firestore.FieldValue;
-    sessionsCollection = db.collection('sessions');
-    requestsCollection = db.collection('requests');
   } catch (err) {
     console.error('Failed to initialize Firestore', err);
     db = null;
-    sessionsCollection = null;
-    requestsCollection = null;
   }
 } else {
   console.warn('Firebase Admin SDK was not initialized. Firestore features are disabled.');
 }
 
-const isFirestoreReady = () => Boolean(db && sessionsCollection && requestsCollection);
+const runFirestoreHealthProbe = async () => {
+  if (!db) {
+    console.warn('Skipping Firestore health probe because Firestore is not configured.');
+    return;
+  }
+
+  try {
+    await db.collection('meta').limit(1).get();
+    console.log('Firestore OK');
+  } catch (err) {
+    console.error('Firestore health probe failed', err);
+  }
+};
+
+runFirestoreHealthProbe();
+
+const getSessionsCollection = () => {
+  if (!db) return null;
+  try {
+    return db.collection('sessions');
+  } catch (err) {
+    console.error('Failed to access sessions collection', err);
+    return null;
+  }
+};
+
+const getRequestsCollection = () => {
+  if (!db) return null;
+  try {
+    return db.collection('requests');
+  } catch (err) {
+    console.error('Failed to access requests collection', err);
+    return null;
+  }
+};
+
+const isFirestoreReady = () => Boolean(getSessionsCollection() && getRequestsCollection());
 
 // ===== Básico
 const app = express();
@@ -367,6 +420,20 @@ app.get('/central-config.js', (_req, res) => {
   res.send(script);
 });
 
+app.get('/healthz', async (_req, res) => {
+  if (!db) {
+    return res.status(503).json({ ok: false, error: 'firestore_unavailable' });
+  }
+
+  try {
+    await db.collection('meta').limit(1).get();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Firestore health check failed', err);
+    res.status(503).json({ ok: false, error: 'firestore_unavailable' });
+  }
+});
+
 // ===== Estado
 const nanoid = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 
@@ -374,6 +441,7 @@ const nanoid = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 const connectionIndex = new Map();
 
 const getRequestById = async (requestId) => {
+  const requestsCollection = getRequestsCollection();
   if (!requestsCollection) return null;
   const snapshot = await requestsCollection.doc(requestId).get();
   if (!snapshot.exists) return null;
@@ -381,6 +449,7 @@ const getRequestById = async (requestId) => {
 };
 
 const getSessionSnapshot = async (sessionId) => {
+  const sessionsCollection = getSessionsCollection();
   if (!sessionsCollection) return null;
   const normalized = normalizeSessionId(sessionId);
   if (!normalized) return null;
@@ -518,6 +587,7 @@ io.on('connection', (socket) => {
   // 1) CLIENTE cria um pedido de suporte (fila real)
   // payload: { clientName?, brand?, model? }
   socket.on('support:request', async (payload = {}) => {
+    const requestsCollection = getRequestsCollection();
     if (!requestsCollection) {
       console.error('Firestore not configured. Cannot enqueue support request.');
       socket.emit('support:error', { error: 'firestore_unavailable' });
@@ -829,6 +899,7 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     connectionIndex.delete(socket.id);
+    const requestsCollection = getRequestsCollection();
     if (requestsCollection && db) {
       try {
         const snapshot = await requestsCollection.where('clientId', '==', socket.id).get();
@@ -859,17 +930,20 @@ io.on('connection', (socket) => {
 
 // ====== HTTP API (usada pelo central.html)
 app.get('/api/requests', async (req, res) => {
-  if (!requestsCollection) {
+  const requestsRef = getRequestsCollection();
+  if (!requestsRef) {
     console.error('Firestore not configured. Cannot list requests.');
     return res.status(503).json({ error: 'firestore_unavailable' });
   }
+
+  const status = ensureString(req.query.status || '', '').toLowerCase();
+
   try {
-    const status = ensureString(req.query.status || '', '').toLowerCase();
     let snapshot;
     if (status) {
-      snapshot = await requestsCollection.where('state', '==', status).get();
+      snapshot = await requestsRef.where('state', '==', status).get();
     } else {
-      snapshot = await requestsCollection.get();
+      snapshot = await requestsRef.get();
     }
     const list = snapshot.docs.map((doc) => {
       const data = doc.data() || {};
@@ -886,6 +960,9 @@ app.get('/api/requests', async (req, res) => {
     res.json(list);
   } catch (err) {
     console.error('Failed to fetch requests', err);
+    if (status === 'queued') {
+      return res.status(503).json({ error: 'firestore_unavailable' });
+    }
     res.status(500).json({ error: 'firestore_error' });
   }
 });
@@ -893,6 +970,8 @@ app.get('/api/requests', async (req, res) => {
 // Aceitar um request -> cria sessionId, notifica cliente
 app.post('/api/requests/:id/accept', async (req, res) => {
   const id = req.params.id;
+  const requestsCollection = getRequestsCollection();
+  const sessionsCollection = getSessionsCollection();
   if (!requestsCollection || !sessionsCollection) {
     console.error('Firestore not configured. Cannot accept request.');
     return res.status(503).json({ error: 'firestore_unavailable' });
@@ -965,6 +1044,7 @@ app.post('/api/requests/:id/accept', async (req, res) => {
 // Recusar/remover um request (apaga da fila e, se quiser, avisa o cliente)
 app.delete('/api/requests/:id', async (req, res) => {
   const id = req.params.id;
+  const requestsCollection = getRequestsCollection();
   if (!requestsCollection) {
     console.error('Firestore not configured. Cannot remove request.');
     return res.status(503).json({ error: 'firestore_unavailable' });
@@ -998,6 +1078,11 @@ app.get('/health', async (_req, res) => {
     return res.status(503).json({ ok: false, error: 'firestore_unavailable' });
   }
   try {
+    const requestsCollection = getRequestsCollection();
+    const sessionsCollection = getSessionsCollection();
+    if (!requestsCollection || !sessionsCollection) {
+      return res.status(503).json({ ok: false, error: 'firestore_unavailable' });
+    }
     const [requestsSnap, sessionsSnap] = await Promise.all([
       requestsCollection.get(),
       sessionsCollection.get(),
@@ -1010,6 +1095,7 @@ app.get('/health', async (_req, res) => {
 });
 
 app.get('/api/sessions', async (req, res) => {
+  const sessionsCollection = getSessionsCollection();
   if (!sessionsCollection) {
     console.error('Firestore not configured. Cannot list sessions.');
     return res.status(503).json({ error: 'firestore_unavailable' });
@@ -1060,7 +1146,7 @@ app.get('/api/sessions', async (req, res) => {
 
 app.post('/api/sessions/:id/close', async (req, res) => {
   const id = req.params.id;
-  if (!sessionsCollection) {
+  if (!getSessionsCollection()) {
     console.error('Firestore not configured. Cannot close session.');
     return res.status(503).json({ error: 'firestore_unavailable' });
   }
@@ -1111,6 +1197,8 @@ app.post('/api/sessions/:id/close', async (req, res) => {
 });
 
 app.get('/api/metrics', async (req, res) => {
+  const sessionsCollection = getSessionsCollection();
+  const requestsCollection = getRequestsCollection();
   if (!sessionsCollection || !requestsCollection) {
     console.error('Firestore not configured. Cannot compute metrics.');
     return res.status(503).json({ error: 'firestore_unavailable' });

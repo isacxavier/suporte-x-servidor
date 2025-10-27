@@ -13,6 +13,7 @@ const shouldBypassCache = (request, url) => {
   if (request.method !== 'GET') return true;
   if (request.headers.get('cache-control')?.includes('no-store')) return true;
   if (url.pathname === '/central.html') return true;
+  if (url.pathname === '/central-config.js') return true;
   if (url.pathname.startsWith('/api/')) return true;
   if (url.pathname.startsWith('/socket.io/')) return true;
   return false;

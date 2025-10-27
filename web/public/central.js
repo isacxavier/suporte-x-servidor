@@ -1,3 +1,17 @@
+import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import {
+  getFirestore,
+  collection,
+  doc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+  Timestamp,
+} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
 const SessionStates = Object.freeze({
   IDLE: 'IDLE',
   ACTIVE: 'ACTIVE',
@@ -8,6 +22,7 @@ const state = {
   queue: [],
   sessions: [],
   metrics: null,
+  techProfile: null,
   selectedSessionId: null,
   joinedSessionId: null,
   sessionState: SessionStates.IDLE,
@@ -34,6 +49,68 @@ const state = {
     remoteStream: null,
     remoteAudioStream: null,
   },
+};
+
+let firebaseAppInstance = null;
+let firestoreInstance = null;
+let firebaseConfigCache = null;
+
+const resolveFirebaseConfig = () => {
+  if (firebaseConfigCache) return firebaseConfigCache;
+  const candidates = [
+    typeof window !== 'undefined' ? window.__FIREBASE_CONFIG__ : null,
+    typeof window !== 'undefined' ? window.firebaseConfig : null,
+    typeof window !== 'undefined' ? window.__firebaseConfig__ : null,
+    typeof window !== 'undefined' ? window.__firebaseConfig : null,
+    typeof window !== 'undefined' ? window.__CENTRAL_CONFIG__?.firebase : null,
+    typeof window !== 'undefined' ? window.__APP_CONFIG__?.firebase : null,
+  ];
+  firebaseConfigCache = candidates.find((candidate) => candidate && typeof candidate === 'object') || null;
+  return firebaseConfigCache;
+};
+
+const ensureFirestore = () => {
+  if (firestoreInstance) return firestoreInstance;
+  const config = resolveFirebaseConfig();
+  if (!config) {
+    console.warn('Firebase config ausente para o painel da central.');
+    return null;
+  }
+  try {
+    if (!firebaseAppInstance) {
+      const apps = getApps();
+      firebaseAppInstance = apps.length ? apps[0] : initializeApp(config);
+    }
+    firestoreInstance = getFirestore(firebaseAppInstance);
+  } catch (error) {
+    console.error('Erro ao inicializar Firebase', error);
+    firestoreInstance = null;
+  }
+  return firestoreInstance;
+};
+
+const sessionRealtimeSubscriptions = new Map();
+let pendingSessionsPromise = null;
+
+const unsubscribeSessionRealtime = (sessionId) => {
+  const entry = sessionRealtimeSubscriptions.get(sessionId);
+  if (!entry) return;
+  try {
+    if (typeof entry.messages === 'function') entry.messages();
+  } catch (error) {
+    console.warn('Falha ao cancelar listener de mensagens', error);
+  }
+  try {
+    if (typeof entry.events === 'function') entry.events();
+  } catch (error) {
+    console.warn('Falha ao cancelar listener de eventos', error);
+  }
+  sessionRealtimeSubscriptions.delete(sessionId);
+};
+
+const unsubscribeAllSessionRealtime = () => {
+  sessionRealtimeSubscriptions.forEach((_value, sessionId) => unsubscribeSessionRealtime(sessionId));
+  sessionRealtimeSubscriptions.clear();
 };
 
 const dom = {
@@ -83,6 +160,38 @@ const dom = {
   closureNps: document.getElementById('closureNps'),
   closureFcr: document.getElementById('closureFcr'),
   closureSubmit: document.getElementById('closureSubmit'),
+};
+
+const getTechProfile = () => {
+  if (state.techProfile) return state.techProfile;
+  const dataset = dom.techIdentity?.dataset || {};
+  const candidates = [
+    typeof window !== 'undefined' ? window.__CENTRAL_TECH__ : null,
+    typeof window !== 'undefined' ? window.__TECH__ : null,
+    typeof window !== 'undefined' ? window.centralTech : null,
+    typeof window !== 'undefined' ? window.__CENTRAL_CONTEXT__?.tech : null,
+  ];
+  const context = candidates.find((candidate) => candidate && typeof candidate === 'object') || {};
+  const tech = {
+    ...context,
+    uid:
+      context.uid ||
+      context.id ||
+      context.techUid ||
+      dataset.techUid ||
+      dataset.techId ||
+      dataset.uid ||
+      null,
+    name: context.name || dataset.techName || dataset.name || dom.techIdentity?.textContent?.trim() || 'Técnico',
+    email: context.email || dataset.techEmail || dataset.email || null,
+  };
+  state.techProfile = tech;
+  if (dom.techIdentity) {
+    if (tech.uid) dom.techIdentity.dataset.techUid = tech.uid;
+    if (tech.name) dom.techIdentity.dataset.techName = tech.name;
+    if (tech.email) dom.techIdentity.dataset.techEmail = tech.email;
+  }
+  return state.techProfile;
 };
 
 const SOCKET_URL = window.location.origin;
@@ -195,6 +304,327 @@ function registerSocketHandler(eventName, handler) {
   sessionResources.socketHandlers.set(eventName, handler);
   socket.on(eventName, handler);
 }
+
+const toMillis = (value) => {
+  if (!value && value !== 0) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.toMillis === 'function') {
+      return value.toMillis();
+    }
+    if (typeof value.toDate === 'function') {
+      const date = value.toDate();
+      return date instanceof Date ? date.getTime() : null;
+    }
+    if (typeof value.seconds === 'number') {
+      const nanos = typeof value.nanoseconds === 'number' ? value.nanoseconds : 0;
+      return value.seconds * 1000 + Math.floor(nanos / 1e6);
+    }
+  }
+  return null;
+};
+
+const describeTimelineEvent = (event) => {
+  if (!event || typeof event !== 'object') return null;
+  const directText = event.text || event.description || event.label || event.message || event.title;
+  if (typeof directText === 'string' && directText.trim()) return directText.trim();
+  const type =
+    typeof event.type === 'string'
+      ? event.type
+      : typeof event.eventType === 'string'
+        ? event.eventType
+        : typeof event.kind === 'string'
+          ? event.kind
+          : typeof event.name === 'string'
+            ? event.name
+            : null;
+  if (!type) return null;
+  const normalized = type.toLowerCase();
+  const dictionary = {
+    queue_entered: 'Cliente entrou na fila',
+    request_created: 'Cliente entrou na fila',
+    session_accepted: 'Atendimento aceito pelo técnico',
+    session_closed: 'Atendimento encerrado',
+    share_start: 'Compartilhamento de tela iniciado',
+    share_stop: 'Compartilhamento de tela encerrado',
+    remote_start: 'Acesso remoto iniciado',
+    remote_stop: 'Acesso remoto encerrado',
+    call_start: 'Chamada iniciada',
+    call_stop: 'Chamada encerrada',
+  };
+  if (dictionary[normalized]) return dictionary[normalized];
+  return normalized.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+const normalizeSessionDoc = (doc) => {
+  if (!doc) return null;
+  const data = typeof doc.data === 'function' ? doc.data() : {};
+  const sessionId = data.sessionId || doc.id;
+  const requestedAt = toMillis(data.requestedAt || data.timestamps?.requestedAt || data.createdAt);
+  const acceptedAt = toMillis(data.acceptedAt || data.timestamps?.acceptedAt || data.startedAt);
+  const closedAt = toMillis(data.closedAt || data.timestamps?.closedAt || data.finishedAt);
+  const waitTimeMsRaw = typeof data.waitTimeMs === 'number' ? data.waitTimeMs : null;
+  const handleTimeMsRaw = typeof data.handleTimeMs === 'number' ? data.handleTimeMs : null;
+  const waitTimeMs =
+    waitTimeMsRaw != null ? waitTimeMsRaw : acceptedAt && requestedAt ? acceptedAt - requestedAt : null;
+  const handleTimeMs =
+    handleTimeMsRaw != null ? handleTimeMsRaw : closedAt && acceptedAt ? closedAt - acceptedAt : null;
+  const extra = typeof data.extra === 'object' && data.extra !== null ? { ...data.extra } : {};
+  const telemetry =
+    typeof data.telemetry === 'object' && data.telemetry !== null ? { ...data.telemetry } : { ...extra.telemetry };
+  const chatLog = Array.isArray(data.chatLog)
+    ? data.chatLog
+    : Array.isArray(extra.chatLog)
+      ? extra.chatLog
+      : [];
+  const timeline = Array.isArray(extra.timeline) ? extra.timeline.map((item) => ({ ...item })) : [];
+  const tech = getTechProfile();
+  return {
+    sessionId,
+    requestId: data.requestId || data.request?.id || sessionId,
+    techName: data.techName || data.tech?.name || tech.name,
+    techUid: data.tech?.uid || data.techUid || tech.uid || null,
+    clientName: data.clientName || data.client?.name || data.client?.displayName || 'Cliente',
+    brand: data.brand || data.device?.brand || data.client?.device?.brand || null,
+    model: data.model || data.device?.model || data.client?.device?.model || null,
+    osVersion: data.osVersion || data.device?.osVersion || data.client?.device?.osVersion || null,
+    plan: data.plan || data.client?.plan || data.context?.plan || null,
+    issue: data.issue || data.client?.issue || data.context?.issue || null,
+    requestedAt: requestedAt || null,
+    acceptedAt: acceptedAt || null,
+    waitTimeMs: waitTimeMs != null ? waitTimeMs : null,
+    status: data.status || (closedAt ? 'closed' : 'active'),
+    closedAt: closedAt || null,
+    handleTimeMs: handleTimeMs != null ? handleTimeMs : null,
+    firstContactResolution:
+      typeof data.firstContactResolution === 'boolean'
+        ? data.firstContactResolution
+        : typeof data.outcome?.firstContactResolution === 'boolean'
+          ? data.outcome.firstContactResolution
+          : null,
+    npsScore:
+      typeof data.npsScore === 'number'
+        ? data.npsScore
+        : typeof data.outcome?.npsScore === 'number'
+          ? data.outcome.npsScore
+          : null,
+    outcome: data.outcome || null,
+    symptom: data.symptom || null,
+    solution: data.solution || null,
+    chatLog,
+    telemetry,
+    extra: { ...extra, chatLog, timeline },
+  };
+};
+
+const normalizeMessageDoc = (doc) => {
+  if (!doc) return null;
+  const data = typeof doc.data === 'function' ? doc.data() : {};
+  const text = data.text || data.body || data.message || '';
+  if (typeof text !== 'string' || !text.trim()) return null;
+  const ts =
+    toMillis(data.ts) ||
+    toMillis(data.timestamp) ||
+    toMillis(data.createdAt) ||
+    toMillis(data.sentAt) ||
+    Date.now();
+  const fromRaw = data.from || data.author || data.sender || 'client';
+  const from = typeof fromRaw === 'string' ? fromRaw : 'client';
+  return {
+    id: data.id || doc.id,
+    from,
+    text: text.trim(),
+    ts,
+  };
+};
+
+const normalizeEventDoc = (doc) => {
+  if (!doc) return null;
+  const data = typeof doc.data === 'function' ? doc.data() : {};
+  const at =
+    toMillis(data.at) ||
+    toMillis(data.timestamp) ||
+    toMillis(data.ts) ||
+    toMillis(data.createdAt) ||
+    toMillis(data.updatedAt) ||
+    null;
+  const telemetryPayload = {};
+  if (typeof data.shareActive === 'boolean') telemetryPayload.shareActive = data.shareActive;
+  if (typeof data.remoteActive === 'boolean') telemetryPayload.remoteActive = data.remoteActive;
+  if (typeof data.callActive === 'boolean') telemetryPayload.callActive = data.callActive;
+  if (typeof data.network !== 'undefined') telemetryPayload.network = data.network;
+  if (typeof data.health !== 'undefined') telemetryPayload.health = data.health;
+  if (typeof data.permissions !== 'undefined') telemetryPayload.permissions = data.permissions;
+  if (typeof data.alerts !== 'undefined') telemetryPayload.alerts = data.alerts;
+  if (typeof data.telemetry === 'object' && data.telemetry !== null) {
+    Object.assign(telemetryPayload, data.telemetry);
+  }
+  return {
+    id: doc.id,
+    at,
+    text: describeTimelineEvent(data),
+    telemetry: telemetryPayload,
+  };
+};
+
+const handleEventsSnapshot = (sessionId, snapshot) => {
+  const events = snapshot.docs.map((docSnap) => normalizeEventDoc(docSnap)).filter(Boolean);
+  const timeline = events
+    .map((evt) => ({
+      at: evt.at || Date.now(),
+      text: evt.text || 'Atualização registrada',
+    }))
+    .sort((a, b) => (a.at || 0) - (b.at || 0))
+    .slice(-TIMELINE_RENDER_LIMIT);
+  const telemetryUpdates = events.reduce((acc, evt) => {
+    if (evt.telemetry && Object.keys(evt.telemetry).length) {
+      Object.assign(acc, evt.telemetry);
+    }
+    return acc;
+  }, {});
+  if (!timeline.length && !Object.keys(telemetryUpdates).length) return;
+  const current = state.telemetryBySession.get(sessionId) || {};
+  const merged = { ...current };
+  if (Object.keys(telemetryUpdates).length) {
+    Object.assign(merged, telemetryUpdates, { updatedAt: Date.now() });
+  }
+  if (timeline.length) {
+    merged.timeline = timeline;
+  }
+  state.telemetryBySession.set(sessionId, merged);
+  const index = state.sessions.findIndex((s) => s.sessionId === sessionId);
+  if (index >= 0) {
+    const session = state.sessions[index];
+    const extra = { ...(session.extra || {}) };
+    if (timeline.length) extra.timeline = timeline;
+    if (Object.keys(telemetryUpdates).length) {
+      extra.telemetry = { ...(extra.telemetry || {}), ...telemetryUpdates };
+    }
+    state.sessions[index] = { ...session, extra, telemetry: { ...(session.telemetry || {}), ...merged } };
+  }
+  if (state.selectedSessionId === sessionId) {
+    renderSessions();
+  }
+};
+
+const subscribeToSessionRealtime = (sessionId) => {
+  if (!sessionId) return;
+  const db = ensureFirestore();
+  if (!db) return;
+  if (sessionRealtimeSubscriptions.has(sessionId)) return;
+  const sessionRef = doc(db, 'sessions', sessionId);
+  const messagesRef = collection(sessionRef, 'messages');
+  const eventsRef = collection(sessionRef, 'events');
+  let unsubMessages = null;
+  let unsubEvents = null;
+  try {
+    const messagesQuery = query(messagesRef, orderBy('ts', 'asc'), limit(CHAT_RENDER_LIMIT * 2));
+    unsubMessages = onSnapshot(
+      messagesQuery,
+      (snapshot) => {
+        const messages = snapshot.docs.map((docSnap) => normalizeMessageDoc(docSnap)).filter(Boolean);
+        state.chatBySession.set(sessionId, messages);
+        const lastMessage = messages.length ? messages[messages.length - 1] : null;
+        const index = state.sessions.findIndex((s) => s.sessionId === sessionId);
+        if (index >= 0) {
+          const session = state.sessions[index];
+          const extra = { ...(session.extra || {}), chatLog: messages };
+          if (lastMessage) extra.lastMessageAt = lastMessage.ts;
+          state.sessions[index] = { ...session, chatLog: messages, extra };
+        }
+        if (state.renderedChatSessionId === sessionId) {
+          state.renderedChatSessionId = null;
+          renderChatForSession();
+        } else if (state.selectedSessionId === sessionId) {
+          renderChatForSession();
+        }
+      },
+      (error) => {
+        console.error('Falha ao escutar mensagens da sessão', sessionId, error);
+      }
+    );
+  } catch (error) {
+    console.error('Falha ao iniciar listener de mensagens da sessão', sessionId, error);
+  }
+  try {
+    const eventsQuery = query(eventsRef, orderBy('ts', 'asc'), limit(TIMELINE_RENDER_LIMIT * 2));
+    unsubEvents = onSnapshot(
+      eventsQuery,
+      (snapshot) => handleEventsSnapshot(sessionId, snapshot),
+      (error) => {
+        console.error('Falha ao escutar eventos da sessão', sessionId, error);
+      }
+    );
+  } catch (error) {
+    console.error('Falha ao iniciar listener de eventos da sessão', sessionId, error);
+  }
+  sessionRealtimeSubscriptions.set(sessionId, { messages: unsubMessages, events: unsubEvents });
+};
+
+const updateSessionRealtimeSubscriptions = (sessions) => {
+  const activeIds = new Set((sessions || []).map((s) => s?.sessionId).filter(Boolean));
+  sessionRealtimeSubscriptions.forEach((_value, sessionId) => {
+    if (!activeIds.has(sessionId)) {
+      unsubscribeSessionRealtime(sessionId);
+    }
+  });
+  activeIds.forEach((sessionId) => {
+    if (!sessionRealtimeSubscriptions.has(sessionId)) {
+      subscribeToSessionRealtime(sessionId);
+    }
+  });
+};
+
+const updateMetricsFromSessions = (sessions) => {
+  if (!Array.isArray(sessions)) return;
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todaysSessions = sessions.filter((session) => {
+    const basis = session.acceptedAt || session.requestedAt || session.closedAt || 0;
+    return basis >= startOfDay;
+  });
+  const closedToday = todaysSessions.filter((session) => session.status === 'closed');
+  const waitTimes = todaysSessions
+    .map((session) => session.waitTimeMs)
+    .filter((ms) => typeof ms === 'number' && ms >= 0);
+  const averageWaitMs = waitTimes.length ? waitTimes.reduce((a, b) => a + b, 0) / waitTimes.length : null;
+  const handleTimes = closedToday
+    .map((session) => session.handleTimeMs)
+    .filter((ms) => typeof ms === 'number' && ms >= 0);
+  const averageHandleMs = handleTimes.length ? handleTimes.reduce((a, b) => a + b, 0) / handleTimes.length : null;
+  const fcrValues = closedToday
+    .filter((session) => typeof session.firstContactResolution === 'boolean')
+    .map((session) => (session.firstContactResolution ? 1 : 0));
+  const fcrPercentage = fcrValues.length
+    ? Math.round((fcrValues.reduce((a, b) => a + b, 0) / fcrValues.length) * 100)
+    : null;
+  const npsScores = closedToday
+    .map((session) => (typeof session.npsScore === 'number' ? session.npsScore : null))
+    .filter((score) => score !== null && !Number.isNaN(score));
+  let nps = null;
+  if (npsScores.length) {
+    const promoters = npsScores.filter((score) => score >= 9).length;
+    const detractors = npsScores.filter((score) => score <= 6).length;
+    nps = Math.round(((promoters - detractors) / npsScores.length) * 100);
+  }
+  const metrics = {
+    attendancesToday: todaysSessions.length,
+    activeSessions: sessions.filter((session) => session.status === 'active').length,
+    averageWaitMs,
+    averageHandleMs,
+    fcrPercentage,
+    nps,
+    queueSize: Array.isArray(state.queue) ? state.queue.length : null,
+    lastUpdated: Date.now(),
+  };
+  state.metrics = metrics;
+  renderMetrics();
+};
 
 const ensureChatStore = (sessionId) => {
   if (!sessionId) return [];
@@ -810,6 +1240,7 @@ function resetDashboard({ sessionId = null, reason = 'peer_ended' } = {}) {
     null;
 
   cleanupSession({ rebindHandlers: true });
+  unsubscribeAllSessionRealtime();
 
   if (targetSessionId) {
     state.chatBySession.delete(targetSessionId);
@@ -1118,7 +1549,8 @@ const renderQueue = () => {
 
 const updateTechIdentity = () => {
   if (!dom.techIdentity) return;
-  const name = dom.techIdentity.dataset.techName || 'Técnico';
+  const tech = getTechProfile();
+  const name = tech.name || 'Técnico';
   dom.techName.textContent = name;
   dom.topbarTechName.textContent = name;
   dom.techInitials.textContent = computeInitials(name);
@@ -1211,14 +1643,39 @@ const renderSessions = () => {
     }
 
     if (dom.contextTimeline) {
-      const timelineEvents = [
-        session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
-        session.acceptedAt ? { at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' } : null,
-        session.closedAt ? { at: session.closedAt, text: 'Atendimento encerrado' } : null,
-      ]
-        .filter(Boolean)
-        .sort((a, b) => a.at - b.at)
-        .slice(-TIMELINE_RENDER_LIMIT);
+      const timelineSource = Array.isArray(telemetry?.timeline) && telemetry.timeline.length
+        ? telemetry.timeline
+        : Array.isArray(session.extra?.timeline) && session.extra.timeline.length
+          ? session.extra.timeline
+          : null;
+      let timelineEvents = [];
+      if (timelineSource) {
+        timelineEvents = timelineSource
+          .map((evt) => {
+            const at = toMillis(evt.at || evt.ts || evt.timestamp || evt.createdAt) || Date.now();
+            const label =
+              typeof evt.text === 'string' && evt.text.trim()
+                ? evt.text.trim()
+                : typeof evt.description === 'string' && evt.description.trim()
+                  ? evt.description.trim()
+                  : typeof evt.label === 'string' && evt.label.trim()
+                    ? evt.label.trim()
+                    : describeTimelineEvent(evt) || 'Atualização registrada';
+            return { at, text: label };
+          })
+          .filter((evt) => evt.text)
+          .sort((a, b) => (a.at || 0) - (b.at || 0))
+          .slice(-TIMELINE_RENDER_LIMIT);
+      } else {
+        timelineEvents = [
+          session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
+          session.acceptedAt ? { at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' } : null,
+          session.closedAt ? { at: session.closedAt, text: 'Atendimento encerrado' } : null,
+        ]
+          .filter(Boolean)
+          .sort((a, b) => (a.at || 0) - (b.at || 0))
+          .slice(-TIMELINE_RENDER_LIMIT);
+      }
 
       if (!timelineEvents.length) {
         const entry = document.createElement('div');
@@ -1322,34 +1779,113 @@ const loadQueue = async () => {
     const data = await res.json();
     state.queue = Array.isArray(data) ? data : [];
     renderQueue();
+    if (state.metrics) {
+      state.metrics = {
+        ...state.metrics,
+        queueSize: Array.isArray(state.queue) ? state.queue.length : null,
+        lastUpdated: Date.now(),
+      };
+      renderMetrics();
+    }
   } catch (error) {
     console.error(error);
     state.queue = [];
     renderQueue();
+    if (state.metrics) {
+      state.metrics = { ...state.metrics, queueSize: 0, lastUpdated: Date.now() };
+      renderMetrics();
+    }
   }
 };
 
-const loadSessions = async () => {
-  try {
-    const res = await fetch('/api/sessions');
-    if (!res.ok) throw new Error('Erro ao carregar sessões');
-    const data = await res.json();
-    state.sessions = Array.isArray(data) ? data : [];
-    state.sessions.forEach(syncSessionStores);
-    renderSessions();
-  } catch (error) {
-    console.error(error);
+const loadSessions = async ({ skipMetrics = false } = {}) => {
+  if (pendingSessionsPromise) {
+    try {
+      const sessions = await pendingSessionsPromise;
+      if (!skipMetrics) updateMetricsFromSessions(sessions);
+      return sessions;
+    } catch (error) {
+      console.error('Erro ao aguardar carregamento de sessões', error);
+      if (!skipMetrics) updateMetricsFromSessions([]);
+      return [];
+    }
   }
+
+  const db = ensureFirestore();
+  const tech = getTechProfile();
+  if (!db) {
+    state.sessions = [];
+    renderSessions();
+    if (!skipMetrics) updateMetricsFromSessions([]);
+    return [];
+  }
+  if (!tech?.uid) {
+    console.warn('UID do técnico ausente. Ignorando carregamento de sessões.');
+    state.sessions = [];
+    renderSessions();
+    if (!skipMetrics) updateMetricsFromSessions([]);
+    return [];
+  }
+
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const sessionsRef = collection(db, 'sessions');
+
+  pendingSessionsPromise = (async () => {
+    let docs = [];
+    const baseConstraints = [where('tech.uid', '==', tech.uid)];
+    try {
+      const q = query(
+        sessionsRef,
+        ...baseConstraints,
+        where('acceptedAt', '>=', Timestamp.fromMillis(startOfDay)),
+        orderBy('acceptedAt', 'desc'),
+        limit(120)
+      );
+      const snapshot = await getDocs(q);
+      docs = snapshot.docs;
+    } catch (error) {
+      console.warn('Falha ao aplicar filtro diário nas sessões. Usando fallback.', error);
+      try {
+        const fallbackQuery = query(sessionsRef, ...baseConstraints, orderBy('acceptedAt', 'desc'), limit(120));
+        const snapshot = await getDocs(fallbackQuery);
+        docs = snapshot.docs;
+      } catch (innerError) {
+        console.error('Erro ao carregar sessões do Firestore', innerError);
+        throw innerError;
+      }
+    }
+
+    const normalized = docs.map((docSnap) => normalizeSessionDoc(docSnap)).filter(Boolean);
+    normalized.sort((a, b) => (b.acceptedAt || b.requestedAt || 0) - (a.acceptedAt || a.requestedAt || 0));
+    return normalized;
+  })();
+
+  let sessions = [];
+  try {
+    sessions = await pendingSessionsPromise;
+  } catch (_error) {
+    sessions = [];
+  } finally {
+    pendingSessionsPromise = null;
+  }
+
+  state.sessions = sessions;
+  state.sessions.forEach(syncSessionStores);
+  updateSessionRealtimeSubscriptions(sessions);
+  renderSessions();
+  if (!skipMetrics) {
+    updateMetricsFromSessions(sessions);
+  }
+  return sessions;
 };
 
 const loadMetrics = async () => {
   try {
-    const res = await fetch('/api/metrics');
-    if (!res.ok) throw new Error('Erro ao carregar métricas');
-    state.metrics = await res.json();
-    renderMetrics();
+    const sessions = state.sessions.length ? state.sessions : await loadSessions({ skipMetrics: true });
+    updateMetricsFromSessions(sessions);
   } catch (error) {
-    console.error(error);
+    console.error('Erro ao atualizar métricas a partir do Firestore', error);
   }
 };
 
@@ -1463,6 +1999,7 @@ function handleSessionUpdated(session) {
     syncSessionStores(session);
   }
   renderSessions();
+  updateSessionRealtimeSubscriptions(state.sessions);
   loadMetrics();
 }
 
@@ -1591,6 +2128,7 @@ function cleanupSession({ rebindHandlers = false } = {}) {
     if (observer && typeof observer.disconnect === 'function') observer.disconnect();
   });
   sessionResources.observers.clear();
+  unsubscribeAllSessionRealtime();
   if (socket) {
     sessionResources.socketHandlers.forEach((handler, eventName) => {
       socket.off(eventName, handler);

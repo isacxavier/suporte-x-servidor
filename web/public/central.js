@@ -1873,49 +1873,14 @@ const renderSessions = () => {
     }
 
     if (dom.contextTimeline) {
-      const timelineSource = Array.isArray(telemetry?.timeline) && telemetry.timeline.length
-        ? telemetry.timeline
-        : Array.isArray(session.extra?.timeline) && session.extra.timeline.length
-          ? session.extra.timeline
-          : null;
-      let timelineEvents = [];
-      if (timelineSource) {
-        timelineEvents = timelineSource
-          .map((evt) => {
-            const at = toMillis(evt.at || evt.ts || evt.timestamp || evt.createdAt) || Date.now();
-            const label =
-              typeof evt.text === 'string' && evt.text.trim()
-                ? evt.text.trim()
-                : typeof evt.description === 'string' && evt.description.trim()
-                  ? evt.description.trim()
-                  : typeof evt.label === 'string' && evt.label.trim()
-                    ? evt.label.trim()
-                    : describeTimelineEvent(evt) || 'Atualização registrada';
-            return { at, text: label };
-          })
-          .filter((evt) => evt.text)
-          .sort((a, b) => (a.at || 0) - (b.at || 0))
-          .slice(-TIMELINE_RENDER_LIMIT);
-        if (timelineEvents.length > 1) {
-          const deduped = [];
-          timelineEvents.forEach((evt) => {
-            const last = deduped[deduped.length - 1];
-            if (!last || last.text !== evt.text || last.at !== evt.at) {
-              deduped.push(evt);
-            }
-          });
-          timelineEvents = deduped;
-        }
-      } else {
-        timelineEvents = [
-          session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
-          session.acceptedAt ? { at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' } : null,
-          session.closedAt ? { at: session.closedAt, text: 'Atendimento encerrado' } : null,
-        ]
-          .filter(Boolean)
-          .sort((a, b) => (a.at || 0) - (b.at || 0))
-          .slice(-TIMELINE_RENDER_LIMIT);
-      }
+      const timelineEvents = [
+        session.requestedAt ? { at: session.requestedAt, text: 'Cliente entrou na fila' } : null,
+        session.acceptedAt ? { at: session.acceptedAt, text: 'Atendimento aceito pelo técnico' } : null,
+        session.closedAt ? { at: session.closedAt, text: 'Atendimento encerrado' } : null,
+      ]
+        .filter(Boolean)
+        .sort((a, b) => (a.at || 0) - (b.at || 0))
+        .slice(-TIMELINE_RENDER_LIMIT);
 
       if (!timelineEvents.length) {
         const entry = document.createElement('div');

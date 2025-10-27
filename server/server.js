@@ -4,8 +4,7 @@ const http = require('http');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const { customAlphabet } = require('nanoid');
-const { initializeApp, cert, getApp, getApps, applicationDefault } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { db, firebaseProjectId } = require('./firebase');
 
 const ensureString = (value, fallback = '') => {
   if (typeof value === 'string') return value.slice(0, 256);
@@ -39,148 +38,7 @@ const respondAck = (ack, payload) => {
   }
 };
 
-let firebaseProjectId = null;
 let firebaseClientConfigCache = undefined;
-
-const resolveProjectIdFromEnv = () => {
-  const candidates = [
-    ensureString(process.env.CENTRAL_FIREBASE_PROJECT_ID || '', ''),
-    ensureString(process.env.FIREBASE_PROJECT_ID || '', ''),
-    ensureString(process.env.GCLOUD_PROJECT || '', ''),
-    ensureString(process.env.GOOGLE_CLOUD_PROJECT || '', ''),
-    ensureString(process.env.GOOGLE_PROJECT_ID || '', ''),
-    ensureString(process.env.GCP_PROJECT || '', ''),
-    ensureString(process.env.GCP_PROJECT_ID || '', ''),
-  ].filter(Boolean);
-
-  return candidates.length ? candidates[0] : null;
-};
-
-const parseJson = (raw) => {
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    console.warn('Failed to parse JSON value', err);
-    return null;
-  }
-};
-
-const buildServiceAccountFromEnv = () => {
-  const gcpServiceAccountBase64 = ensureString(process.env.GCP_SA_KEY_B64 || '', '');
-  if (gcpServiceAccountBase64) {
-    try {
-      const decoded = Buffer.from(gcpServiceAccountBase64, 'base64').toString('utf8');
-      const parsed = parseJson(decoded);
-      if (parsed && typeof parsed === 'object') {
-        return parsed;
-      }
-    } catch (err) {
-      console.error('Failed to decode GCP_SA_KEY_B64', err);
-    }
-  }
-
-  const directJson = ensureString(process.env.FIREBASE_SERVICE_ACCOUNT || '', '');
-  if (directJson) {
-    const parsed = parseJson(directJson);
-    if (parsed && typeof parsed === 'object') {
-      return parsed;
-    }
-  }
-
-  const base64Json = ensureString(
-    process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || process.env.FIREBASE_SERVICE_ACCOUNT_B64 || '',
-    ''
-  );
-  if (base64Json) {
-    try {
-      const decoded = Buffer.from(base64Json, 'base64').toString('utf8');
-      const parsed = parseJson(decoded);
-      if (parsed && typeof parsed === 'object') {
-        return parsed;
-      }
-    } catch (err) {
-      console.warn('Failed to decode FIREBASE_SERVICE_ACCOUNT_BASE64', err);
-    }
-  }
-
-  const projectIdCandidate = resolveProjectIdFromEnv();
-  let projectId = projectIdCandidate || null;
-  let clientEmail = ensureString(
-    process.env.FIREBASE_CLIENT_EMAIL || process.env.GOOGLE_CLIENT_EMAIL || process.env.GCP_CLIENT_EMAIL || '',
-    ''
-  );
-  let privateKeyRaw = ensureString(
-    process.env.FIREBASE_PRIVATE_KEY || process.env.GOOGLE_PRIVATE_KEY || process.env.GCP_PRIVATE_KEY || '',
-    ''
-  );
-
-  if (privateKeyRaw && privateKeyRaw.trim().startsWith('{')) {
-    const parsedPrivate = parseJson(privateKeyRaw);
-    if (parsedPrivate && typeof parsedPrivate === 'object') {
-      if (typeof parsedPrivate.private_key === 'string') {
-        privateKeyRaw = parsedPrivate.private_key;
-      }
-      if (!clientEmail && typeof parsedPrivate.client_email === 'string') {
-        clientEmail = parsedPrivate.client_email;
-      }
-      if (!projectId && typeof parsedPrivate.project_id === 'string') {
-        projectId = parsedPrivate.project_id;
-      }
-    }
-  }
-
-  if (privateKeyRaw) {
-    privateKeyRaw = privateKeyRaw.replace(/\r/g, '').replace(/\\n/g, '\n');
-  }
-
-  if (projectId && clientEmail && privateKeyRaw) {
-    const serviceAccount = {
-      project_id: projectId,
-      client_email: clientEmail,
-      private_key: privateKeyRaw,
-    };
-
-    const optionalFieldMap = {
-      private_key_id: [
-        'FIREBASE_PRIVATE_KEY_ID',
-        'GOOGLE_PRIVATE_KEY_ID',
-        'GCP_PRIVATE_KEY_ID',
-      ],
-      client_id: ['FIREBASE_CLIENT_ID', 'GOOGLE_CLIENT_ID', 'GCP_CLIENT_ID'],
-      token_uri: ['FIREBASE_TOKEN_URI', 'GOOGLE_TOKEN_URI', 'GCP_TOKEN_URI'],
-      auth_uri: ['FIREBASE_AUTH_URI', 'GOOGLE_AUTH_URI', 'GCP_AUTH_URI'],
-      auth_provider_x509_cert_url: [
-        'FIREBASE_AUTH_PROVIDER_X509_CERT_URL',
-        'GOOGLE_AUTH_PROVIDER_X509_CERT_URL',
-        'GCP_AUTH_PROVIDER_X509_CERT_URL',
-      ],
-      client_x509_cert_url: [
-        'FIREBASE_CLIENT_X509_CERT_URL',
-        'GOOGLE_CLIENT_X509_CERT_URL',
-        'GCP_CLIENT_X509_CERT_URL',
-      ],
-      universe_domain: [
-        'FIREBASE_UNIVERSE_DOMAIN',
-        'GOOGLE_UNIVERSE_DOMAIN',
-        'GCP_UNIVERSE_DOMAIN',
-      ],
-    };
-
-    Object.entries(optionalFieldMap).forEach(([field, envKeys]) => {
-      for (const envKey of envKeys) {
-        const value = ensureString(process.env[envKey] || '', '');
-        if (value) {
-          serviceAccount[field] = value;
-          break;
-        }
-      }
-    });
-
-    return serviceAccount;
-  }
-
-  return null;
-};
 
 const resolveFirebaseClientConfig = () => {
   if (firebaseClientConfigCache !== undefined) {
@@ -249,64 +107,6 @@ const resolveFirebaseClientConfig = () => {
   firebaseClientConfigCache = Object.keys(config).length ? config : null;
   return firebaseClientConfigCache;
 };
-
-const initializeFirebase = () => {
-  try {
-    if (getApps().length) return getApp();
-  } catch (err) {
-    console.error('Failed to retrieve existing Firebase app', err);
-  }
-
-  const serviceAccount = buildServiceAccountFromEnv();
-  const projectIdFromEnv = resolveProjectIdFromEnv();
-  const explicitProjectId = ensureString(process.env.GCP_PROJECT_ID || '', '');
-
-  firebaseProjectId =
-    explicitProjectId ||
-    (serviceAccount && ensureString(serviceAccount.project_id || '', '')) ||
-    projectIdFromEnv ||
-    firebaseProjectId;
-
-  if (serviceAccount) {
-    try {
-      return initializeApp({
-        credential: cert(serviceAccount),
-        projectId: firebaseProjectId || undefined,
-      });
-    } catch (err) {
-      console.error('Failed to initialize Firebase with provided service account', err);
-    }
-  }
-
-  console.warn(
-    'Firebase service account credentials were not provided. Attempting application default credentials.'
-  );
-
-  try {
-    return initializeApp({
-      credential: applicationDefault(),
-      projectId: firebaseProjectId || undefined,
-    });
-  } catch (err) {
-    console.error('Failed to initialize Firebase with application default credentials', err);
-    return null;
-  }
-};
-
-const firebaseApp = initializeFirebase();
-let db = null;
-
-if (firebaseApp) {
-  try {
-    db = getFirestore(firebaseApp);
-    db.settings({ ignoreUndefinedProperties: true });
-  } catch (err) {
-    console.error('Failed to initialize Firestore', err);
-    db = null;
-  }
-} else {
-  console.warn('Firebase Admin SDK was not initialized. Firestore features are disabled.');
-}
 
 const runFirestoreHealthProbe = async () => {
   if (!db) {

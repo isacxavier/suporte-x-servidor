@@ -150,6 +150,7 @@ const dom = {
   techIdentity: document.querySelector('.tech-identity'),
   techInitials: document.getElementById('techInitials'),
   techName: document.getElementById('techName'),
+  techDataset: document.body,
   topbarTechName: document.getElementById('topbarTechName'),
   chatThread: document.getElementById('chatThread'),
   chatForm: document.getElementById('chatForm'),
@@ -169,6 +170,19 @@ const dom = {
   closureFcr: document.getElementById('closureFcr'),
   closureSubmit: document.getElementById('closureSubmit'),
   toast: document.getElementById('toast'),
+};
+
+const getTechDatasetElement = () => dom.techIdentity || dom.techDataset;
+
+const getTechDataset = () => getTechDatasetElement()?.dataset || {};
+
+const updateTechDataset = (entries = {}) => {
+  const target = getTechDatasetElement();
+  if (!target) return;
+  Object.entries(entries).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    target.dataset[key] = String(value);
+  });
 };
 
 const showToast = (message) => {
@@ -244,7 +258,7 @@ const markQueueUnavailable = ({ statusText = '' } = {}) => {
 
 const getTechProfile = () => {
   if (state.techProfile) return state.techProfile;
-  const dataset = dom.techIdentity?.dataset || {};
+  const dataset = getTechDataset();
   const candidates = [
     typeof window !== 'undefined' ? window.__CENTRAL_TECH__ : null,
     typeof window !== 'undefined' ? window.__TECH__ : null,
@@ -262,15 +276,11 @@ const getTechProfile = () => {
       dataset.techId ||
       dataset.uid ||
       null,
-    name: context.name || dataset.techName || dataset.name || dom.techIdentity?.textContent?.trim() || 'Técnico',
+    name: context.name || dataset.techName || dataset.name || 'Técnico',
     email: context.email || dataset.techEmail || dataset.email || null,
   };
   state.techProfile = tech;
-  if (dom.techIdentity) {
-    if (tech.uid) dom.techIdentity.dataset.techUid = tech.uid;
-    if (tech.name) dom.techIdentity.dataset.techName = tech.name;
-    if (tech.email) dom.techIdentity.dataset.techEmail = tech.email;
-  }
+  updateTechDataset({ techUid: tech.uid, techName: tech.name, techEmail: tech.email });
   return state.techProfile;
 };
 
@@ -778,7 +788,7 @@ const ingestChatMessage = (message, { isSelf = false } = {}) => {
     const session = state.sessions.find((s) => s.sessionId === message.sessionId);
     const isTech = normalized.from === 'tech';
     addChatMessage({
-      author: isTech ? (dom.techIdentity?.dataset?.techName || 'Você') : session?.clientName || normalized.from,
+      author: isTech ? (getTechDataset().techName || 'Você') : session?.clientName || normalized.from,
       text: normalized.text,
       kind: isTech ? 'self' : 'client',
       ts: normalized.ts,
@@ -1140,7 +1150,7 @@ const renderChatForSession = () => {
     const history = state.chatBySession.get(session.sessionId) || [];
     const messages = history.slice(-CHAT_RENDER_LIMIT);
     const fragment = document.createDocumentFragment();
-    const techName = dom.techIdentity?.dataset?.techName || 'Você';
+    const techName = getTechDataset().techName || 'Você';
     if (!messages.length) {
       fragment.appendChild(
         createChatEntryElement({
@@ -1629,12 +1639,11 @@ const renderQueue = () => {
 };
 
 const updateTechIdentity = () => {
-  if (!dom.techIdentity) return;
   const tech = getTechProfile();
   const name = tech.name || 'Técnico';
-  dom.techName.textContent = name;
-  dom.topbarTechName.textContent = name;
-  dom.techInitials.textContent = computeInitials(name);
+  if (dom.techName) dom.techName.textContent = name;
+  if (dom.topbarTechName) dom.topbarTechName.textContent = name;
+  if (dom.techInitials) dom.techInitials.textContent = computeInitials(name);
 };
 
 const renderSessions = () => {
@@ -1833,7 +1842,7 @@ const addChatMessage = ({ author, text, kind = 'client', ts = Date.now() }) => {
 
 const acceptRequest = async (requestId) => {
   if (!requestId) return;
-  const techName = dom.techIdentity?.dataset?.techName || 'Técnico';
+  const techName = getTechDataset().techName || 'Técnico';
   try {
     const res = await fetch(`/api/requests/${requestId}/accept`, {
       method: 'POST',

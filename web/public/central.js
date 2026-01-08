@@ -50,6 +50,14 @@ const state = {
     remoteStream: null,
     remoteAudioStream: null,
   },
+  legacyShare: {
+    room: null,
+    pc: null,
+    remoteStream: null,
+    remoteAudioStream: null,
+    active: false,
+    pendingRoom: null,
+  },
 };
 
 let firebaseAppInstance = null;
@@ -163,6 +171,11 @@ const dom = {
   controlQuality: document.getElementById('controlQuality'),
   controlRemote: document.getElementById('controlRemote'),
   controlStats: document.getElementById('controlStats'),
+  webSharePanel: document.getElementById('webSharePanel'),
+  webShareRoom: document.getElementById('webShareRoom'),
+  webShareConnect: document.getElementById('webShareConnect'),
+  webShareDisconnect: document.getElementById('webShareDisconnect'),
+  webShareStatus: document.getElementById('webShareStatus'),
   closureForm: document.getElementById('closureForm'),
   closureOutcome: document.getElementById('closureOutcome'),
   closureSymptom: document.getElementById('closureSymptom'),
@@ -171,6 +184,15 @@ const dom = {
   closureFcr: document.getElementById('closureFcr'),
   closureSubmit: document.getElementById('closureSubmit'),
   toast: document.getElementById('toast'),
+};
+
+const getLegacyRoomFromQuery = () => {
+  try {
+    return new URLSearchParams(window.location.search).get('room');
+  } catch (error) {
+    console.warn('Falha ao ler room da URL', error);
+    return null;
+  }
 };
 
 const getTechDatasetElement = () => dom.techIdentity || dom.techDataset;
@@ -989,27 +1011,61 @@ const clearRemoteAudio = () => {
   }
   state.media.remoteAudioStream = null;
   if (dom.sessionAudio) {
-    dom.sessionAudio.srcObject = null;
+    if (state.legacyShare.remoteAudioStream) {
+      dom.sessionAudio.srcObject = state.legacyShare.remoteAudioStream;
+    } else {
+      dom.sessionAudio.srcObject = null;
+      dom.sessionAudio.pause();
+      dom.sessionAudio.setAttribute('hidden', 'hidden');
+    }
+  }
+  updateMediaDisplay();
+};
+
+const clearLegacyVideo = () => {
+  if (state.legacyShare.remoteStream) {
+    stopStreamTracks(state.legacyShare.remoteStream);
+  }
+  state.legacyShare.remoteStream = null;
+  updateMediaDisplay();
+};
+
+const clearLegacyAudio = () => {
+  if (
+    state.legacyShare.remoteAudioStream &&
+    state.legacyShare.remoteAudioStream !== state.legacyShare.remoteStream
+  ) {
+    stopStreamTracks(state.legacyShare.remoteAudioStream);
+  }
+  state.legacyShare.remoteAudioStream = null;
+  if (dom.sessionAudio && !state.media.remoteAudioStream) {
     dom.sessionAudio.pause();
     dom.sessionAudio.setAttribute('hidden', 'hidden');
+    dom.sessionAudio.srcObject = null;
+  } else if (dom.sessionAudio && state.media.remoteAudioStream) {
+    dom.sessionAudio.srcObject = state.media.remoteAudioStream;
   }
   updateMediaDisplay();
 };
 
 const updateMediaDisplay = () => {
   scheduleRender(() => {
-    const hasLocalScreen = Boolean(state.media.local.screen);
-    const hasRemoteVideo = Boolean(state.media.remoteStream);
+    const activeVideoStream =
+      state.media.local.screen || state.media.remoteStream || state.legacyShare.remoteStream;
+    const hasVideo = Boolean(activeVideoStream);
     if (dom.sessionVideo) {
-      if (hasRemoteVideo || hasLocalScreen) {
+      if (hasVideo) {
         dom.sessionVideo.removeAttribute('hidden');
+        if (dom.sessionVideo.srcObject !== activeVideoStream) {
+          dom.sessionVideo.srcObject = activeVideoStream;
+        }
       } else {
         dom.sessionVideo.setAttribute('hidden', 'hidden');
         dom.sessionVideo.srcObject = null;
       }
     }
     if (dom.sessionPlaceholder) {
-      if (hasRemoteVideo || hasLocalScreen) {
+      if (hasVideo) {
         dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
       } else {
         dom.sessionPlaceholder.removeAttribute('hidden');
@@ -1114,6 +1170,188 @@ const ensurePeerConnection = (sessionId) => {
   state.media.pc = pc;
   state.media.sessionId = sessionId;
   return pc;
+};
+
+const setLegacyStatus = (message) => {
+  if (!dom.webShareStatus) return;
+  dom.webShareStatus.textContent = message;
+};
+
+const updateLegacyControls = () => {
+  if (dom.webShareConnect) {
+    dom.webShareConnect.disabled = state.legacyShare.active;
+  }
+  if (dom.webShareDisconnect) {
+    dom.webShareDisconnect.disabled = !state.legacyShare.active;
+  }
+  if (dom.webShareRoom) {
+    dom.webShareRoom.disabled = state.legacyShare.active;
+  }
+};
+
+const teardownLegacyShare = ({ keepRoom = false } = {}) => {
+  if (state.legacyShare.pc) {
+    try {
+      state.legacyShare.pc.ontrack = null;
+      state.legacyShare.pc.onicecandidate = null;
+      state.legacyShare.pc.onconnectionstatechange = null;
+      state.legacyShare.pc.close();
+    } catch (err) {
+      console.warn('Falha ao encerrar PeerConnection legado', err);
+    }
+  }
+  state.legacyShare.pc = null;
+  if (!keepRoom) state.legacyShare.room = null;
+  state.legacyShare.active = false;
+  state.legacyShare.pendingRoom = null;
+  clearLegacyVideo();
+  clearLegacyAudio();
+  updateLegacyControls();
+};
+
+const ensureLegacyPeerConnection = (room) => {
+  if (!room) return null;
+  if (state.legacyShare.pc && state.legacyShare.room && state.legacyShare.room !== room) {
+    teardownLegacyShare({ keepRoom: true });
+  }
+  if (state.legacyShare.pc && state.legacyShare.room === room) return state.legacyShare.pc;
+
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
+
+  pc.onicecandidate = (event) => {
+    if (!event.candidate || !socket || socket.disconnected) return;
+    socket.emit('signal', { room, data: event.candidate });
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') {
+      setLegacyStatus('Compartilhamento web conectado.');
+      return;
+    }
+    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      setLegacyStatus('Compartilhamento web desconectado.');
+      clearLegacyVideo();
+      clearLegacyAudio();
+    }
+  };
+
+  pc.ontrack = (event) => {
+    if (!event || !event.track) return;
+    if (event.track.kind === 'video') {
+      const stream = event.streams?.[0] || new MediaStream([event.track]);
+      state.legacyShare.remoteStream = stream;
+      event.track.addEventListener('ended', () => {
+        if (state.legacyShare.remoteStream === stream) {
+          clearLegacyVideo();
+        }
+      });
+    }
+    if (event.track.kind === 'audio') {
+      const audioStream = state.legacyShare.remoteAudioStream || new MediaStream();
+      audioStream.addTrack(event.track);
+      state.legacyShare.remoteAudioStream = audioStream;
+      if (dom.sessionAudio) {
+        dom.sessionAudio.srcObject = audioStream;
+        dom.sessionAudio.removeAttribute('hidden');
+        const playPromise = dom.sessionAudio.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {});
+        }
+      }
+      event.track.addEventListener('ended', () => {
+        if (state.legacyShare.remoteAudioStream) {
+          const tracks = state.legacyShare.remoteAudioStream.getTracks().filter((t) => t !== event.track);
+          const stream = new MediaStream(tracks);
+          state.legacyShare.remoteAudioStream = stream.getTracks().length ? stream : null;
+          if (!state.legacyShare.remoteAudioStream && dom.sessionAudio) {
+            dom.sessionAudio.pause();
+            dom.sessionAudio.setAttribute('hidden', 'hidden');
+          } else if (state.legacyShare.remoteAudioStream && dom.sessionAudio) {
+            dom.sessionAudio.srcObject = state.legacyShare.remoteAudioStream;
+          }
+        }
+      });
+    }
+    updateMediaDisplay();
+  };
+
+  state.legacyShare.pc = pc;
+  state.legacyShare.room = room;
+  return pc;
+};
+
+const activateLegacyShare = (room) => {
+  const normalized = typeof room === 'string' ? room.trim() : '';
+  if (!normalized) {
+    setLegacyStatus('Informe o código de 6 dígitos para conectar.');
+    return;
+  }
+
+  if (state.legacyShare.room && state.legacyShare.room !== normalized) {
+    teardownLegacyShare();
+  }
+
+  state.legacyShare.active = true;
+  state.legacyShare.room = normalized;
+  state.legacyShare.pendingRoom = null;
+  updateLegacyControls();
+
+  if (socket && !socket.disconnected) {
+    socket.emit('join', { room: normalized, role: 'viewer' });
+  } else {
+    state.legacyShare.pendingRoom = normalized;
+  }
+
+  ensureLegacyPeerConnection(normalized);
+  setLegacyStatus('Aguardando o cliente iniciar o compartilhamento…');
+};
+
+const disconnectLegacyShare = () => {
+  teardownLegacyShare();
+  setLegacyStatus('Nenhum compartilhamento web ativo.');
+};
+
+const handleLegacySignal = async (payload) => {
+  if (!state.legacyShare.active || !payload) return;
+  const room = state.legacyShare.room;
+  if (!room) return;
+
+  const pc = ensureLegacyPeerConnection(room);
+  if (!pc) return;
+
+  if (payload.type === 'offer' || (payload.sdp && payload.type)) {
+    try {
+      await pc.setRemoteDescription(payload);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      if (socket && !socket.disconnected) {
+        socket.emit('signal', { room, data: pc.localDescription });
+      }
+    } catch (error) {
+      console.error('Erro ao processar oferta web', error);
+      setLegacyStatus('Falha ao aceitar a oferta do cliente.');
+    }
+    return;
+  }
+
+  if (payload.type === 'answer') {
+    try {
+      await pc.setRemoteDescription(payload);
+    } catch (error) {
+      console.error('Erro ao aplicar answer web', error);
+    }
+    return;
+  }
+
+  if (payload.candidate) {
+    try {
+      await pc.addIceCandidate(payload);
+    } catch (error) {
+      console.error('Erro ao adicionar ICE web', error);
+    }
+  }
 };
 
 const removeSendersForType = (type) => {
@@ -2221,6 +2459,41 @@ const bindQueueRetryButton = () => {
   });
 };
 
+const bindLegacyShareControls = () => {
+  if (dom.webShareConnect) {
+    dom.webShareConnect.addEventListener('click', () => {
+      activateLegacyShare(dom.webShareRoom?.value || '');
+    });
+  }
+  if (dom.webShareDisconnect) {
+    dom.webShareDisconnect.addEventListener('click', () => {
+      disconnectLegacyShare();
+    });
+  }
+  if (dom.webShareRoom) {
+    dom.webShareRoom.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        activateLegacyShare(dom.webShareRoom.value);
+      }
+    });
+  }
+
+  const roomFromUrl = getLegacyRoomFromQuery();
+  if (dom.webShareRoom && roomFromUrl) {
+    dom.webShareRoom.value = roomFromUrl;
+  }
+  if (roomFromUrl) {
+    if (socket && !socket.disconnected) {
+      activateLegacyShare(roomFromUrl);
+    } else {
+      state.legacyShare.pendingRoom = roomFromUrl;
+      setLegacyStatus('Preparando conexão com o compartilhamento web…');
+    }
+  }
+  updateLegacyControls();
+};
+
 const bootstrap = async () => {
   updateTechIdentity();
   setSessionState(SessionStates.IDLE, null);
@@ -2229,6 +2502,7 @@ const bootstrap = async () => {
   initChat();
   bindClosureForm();
   bindQueueRetryButton();
+  bindLegacyShareControls();
   loadQueue();
   await Promise.all([loadSessions(), loadMetrics()]);
 };
@@ -2237,10 +2511,16 @@ function handleSocketConnect() {
   addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
   state.joinedSessionId = null;
   joinSelectedSession();
+  if (state.legacyShare.pendingRoom) {
+    activateLegacyShare(state.legacyShare.pendingRoom);
+  }
 }
 
 function handleSocketDisconnect() {
   addChatMessage({ author: 'Sistema', text: 'Desconectado. Tentando reconectar…', kind: 'system' });
+  if (state.legacyShare.active) {
+    setLegacyStatus('Conexão perdida. Tentando reconectar…');
+  }
 }
 
 function handleQueueUpdated() {
@@ -2321,6 +2601,16 @@ function handleSessionEndedEvent(payload) {
 }
 
 function handlePeerLeft() {
+  if (
+    state.legacyShare.active &&
+    !state.joinedSessionId &&
+    !state.activeSessionId &&
+    !state.selectedSessionId
+  ) {
+    teardownLegacyShare();
+    setLegacyStatus('Cliente encerrou o compartilhamento web.');
+    return;
+  }
   const sessionId = state.joinedSessionId || state.activeSessionId || state.selectedSessionId || null;
   if (!sessionId) return;
   addChatMessage({ author: 'Sistema', text: 'Cliente desconectou do atendimento.', kind: 'system' });
@@ -2394,6 +2684,7 @@ function setupSocketHandlers() {
   registerSocketHandler('session:status', handleSessionStatus);
   registerSocketHandler('session:ended', handleSessionEndedEvent);
   registerSocketHandler('peer-left', handlePeerLeft);
+  registerSocketHandler('signal', handleLegacySignal);
   registerSocketHandler('signal:offer', handleSignalOffer);
   registerSocketHandler('signal:answer', handleSignalAnswer);
   registerSocketHandler('signal:candidate', handleSignalCandidate);
@@ -2417,6 +2708,7 @@ function cleanupSession({ rebindHandlers = false } = {}) {
   sessionResources.socketHandlers.clear();
   cancelScheduledRenders();
   teardownPeerConnection();
+  teardownLegacyShare();
   resetCommandState();
   setSessionState(SessionStates.IDLE, null);
   state.joinedSessionId = null;

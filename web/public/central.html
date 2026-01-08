@@ -139,6 +139,18 @@
                 <h2>Sessão em andamento</h2>
               </div>
               <div class="panel-body" style="gap: 18px;">
+                <div class="web-share" id="webSharePanel">
+                  <div class="web-share-header">
+                    <strong>Compartilhamento web (Send)</strong>
+                    <span class="muted small">Informe o código gerado no navegador do cliente.</span>
+                  </div>
+                  <div class="web-share-controls">
+                    <input id="webShareRoom" type="text" inputmode="numeric" placeholder="Código de 6 dígitos" maxlength="6" />
+                    <button type="button" id="webShareConnect">Conectar</button>
+                    <button type="button" id="webShareDisconnect" disabled>Desconectar</button>
+                  </div>
+                  <div class="web-share-status muted small" id="webShareStatus">Nenhum compartilhamento web ativo.</div>
+                </div>
                 <div class="video-shell">
                   <video id="sessionVideo" autoplay playsinline muted hidden></video>
                   <audio id="sessionAudio" autoplay hidden></audio>

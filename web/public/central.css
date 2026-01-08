@@ -540,6 +540,54 @@ body {
   gap: 16px;
 }
 
+.web-share {
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.web-share-header {
+  display: grid;
+  gap: 4px;
+}
+
+.web-share-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+}
+
+.web-share-controls input {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.web-share-controls button {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.web-share-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.web-share-status {
+  font-size: 12px;
+}
+
 .context-grid {
   display: grid;
   gap: 14px;

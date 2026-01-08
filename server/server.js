@@ -432,6 +432,14 @@ io.on('connection', (socket) => {
     socket.to(room).emit('peer-joined', { role });
   });
 
+  // Sinalização legada para send.html (room-based)
+  socket.on('signal', (payload = {}) => {
+    const room = ensureString(payload.room || '', '').trim();
+    if (!room) return;
+    if (!payload.data) return;
+    socket.to(room).emit('signal', payload.data);
+  });
+
   socket.on('session:join', async (payload = {}, ack) => {
     const sessionId = normalizeSessionId(payload.sessionId);
     if (!sessionId) {

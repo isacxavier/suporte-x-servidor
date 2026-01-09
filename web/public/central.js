@@ -167,12 +167,16 @@ const dom = {
   quickReplies: document.querySelectorAll('.quick-replies button[data-reply]'),
   sessionVideo: document.getElementById('sessionVideo'),
   sessionAudio: document.getElementById('sessionAudio'),
+  videoShell: document.getElementById('videoShell'),
   controlStart: document.getElementById('controlStart'),
   controlQuality: document.getElementById('controlQuality'),
   controlRemote: document.getElementById('controlRemote'),
   controlFullscreen: document.getElementById('controlFullscreen'),
   controlPip: document.getElementById('controlPip'),
   controlStats: document.getElementById('controlStats'),
+  controlMenuToggle: document.getElementById('controlMenuToggle'),
+  controlMenuPanel: document.getElementById('controlMenuPanel'),
+  controlMenuBackdrop: document.getElementById('controlMenuBackdrop'),
   webSharePanel: document.getElementById('webSharePanel'),
   webShareRoom: document.getElementById('webShareRoom'),
   webShareConnect: document.getElementById('webShareConnect'),
@@ -232,6 +236,22 @@ const updateFullscreenLabel = () => {
 const updatePipLabel = () => {
   if (!dom.controlPip) return;
   dom.controlPip.textContent = document.pictureInPictureElement ? 'Fechar janela' : 'Janela flutuante';
+};
+
+const setControlMenuOpen = (isOpen) => {
+  if (!dom.videoShell || !dom.controlMenuToggle || !dom.controlMenuPanel) return;
+  dom.videoShell.classList.toggle('control-menu-open', isOpen);
+  dom.controlMenuToggle.setAttribute('aria-expanded', String(isOpen));
+  dom.controlMenuPanel.setAttribute('aria-hidden', String(!isOpen));
+  if (dom.controlMenuBackdrop) {
+    dom.controlMenuBackdrop.hidden = !isOpen;
+  }
+};
+
+const toggleControlMenu = () => {
+  if (!dom.videoShell) return;
+  const isOpen = dom.videoShell.classList.contains('control-menu-open');
+  setControlMenuOpen(!isOpen);
 };
 
 const clearQueueRetryTimer = () => {
@@ -1873,6 +1893,22 @@ const bindSessionControls = () => {
   }
 };
 
+const bindControlMenu = () => {
+  if (!dom.controlMenuToggle || !dom.videoShell) return;
+  dom.controlMenuToggle.addEventListener('click', toggleControlMenu);
+  dom.controlMenuBackdrop?.addEventListener('click', () => setControlMenuOpen(false));
+  dom.controlMenuPanel?.addEventListener('click', (event) => {
+    if (event.target instanceof HTMLButtonElement) {
+      setControlMenuOpen(false);
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      setControlMenuOpen(false);
+    }
+  });
+};
+
 const bindViewControls = () => {
   if (dom.controlFullscreen) {
     if (!document.fullscreenEnabled) {
@@ -2566,6 +2602,7 @@ const bootstrap = async () => {
   setSessionState(SessionStates.IDLE, null);
   resetCommandState();
   bindSessionControls();
+  bindControlMenu();
   bindViewControls();
   initChat();
   bindClosureForm();

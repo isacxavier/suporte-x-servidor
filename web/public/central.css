@@ -651,23 +651,42 @@ body {
   padding: 24px;
 }
 
-.floating-controls {
+.control-menu-backdrop {
   position: absolute;
-  left: 50%;
-  bottom: 18px;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: center;
-  background: rgba(2, 6, 23, 0.72);
-  border-radius: 999px;
-  padding: 12px 18px;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  backdrop-filter: blur(18px);
+  inset: 0;
+  background: rgba(2, 6, 23, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 2;
 }
 
-.floating-controls button {
+.control-menu {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  z-index: 3;
+}
+
+.control-menu-panel {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(2, 6, 23, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.45);
+  min-width: 190px;
+}
+
+.control-menu-open .control-menu-panel {
+  display: flex;
+}
+
+.control-menu-panel button {
   padding: 10px 14px;
   border-radius: 999px;
   border: 1px solid var(--border);
@@ -675,6 +694,33 @@ body {
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
+  text-align: left;
+}
+
+.control-menu-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(2, 6, 23, 0.78);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.control-menu-toggle:hover {
+  background: rgba(15, 23, 42, 0.9);
+  border-color: rgba(148, 163, 184, 0.6);
+}
+
+.control-menu-dots {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text);
+  display: inline-block;
+  box-shadow: 0 -6px 0 var(--text), 0 6px 0 var(--text);
 }
 
 .indicators {

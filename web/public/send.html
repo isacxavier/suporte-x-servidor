@@ -14,13 +14,12 @@
 <body>
   <div class="card">
     <h1>Cliente: Compartilhar Tela</h1>
-    <p class="muted">1) Toque em <b>Gerar código</b>. 2) Envie o link para o técnico. 3) Toque em <b>Iniciar compartilhamento</b> e confirme <b>Iniciar agora</b>.</p>
+    <p class="muted">1) Toque em <b>Gerar código</b>. 2) Envie o <b>código</b> para o técnico. 3) Toque em <b>Iniciar compartilhamento</b> e confirme <b>Iniciar agora</b>.</p>
     <div class="row">
       <input id="room" type="text" placeholder="Código da sessão (6 dígitos)" />
       <button id="gen">Gerar código</button>
     </div>
     <p class="muted">Código: <span id="rc" class="roomcode">—</span></p>
-    <p class="muted">Link do visualizador: <span id="viewlink" class="link">—</span></p>
     <div class="row" style="margin-top:10px;">
       <button id="start" disabled>Iniciar compartilhamento</button>
       <button id="stop" disabled>Parar</button>
@@ -31,7 +30,6 @@
     <script>
       const roomInput = qs('#room');
       const rc = qs('#rc');
-      const viewlink = qs('#viewlink');
       const startBtn = qs('#start');
       const stopBtn = qs('#stop');
       const statusEl = qs('#status');
@@ -40,8 +38,6 @@
       if (roomFromURL) {
         roomInput.value = roomFromURL;
         rc.textContent = roomFromURL;
-        viewlink.textContent = location.origin + "/central.html?room=" + roomFromURL;
-        viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
         startBtn.disabled = false;
       }
 
@@ -49,8 +45,6 @@
         const r = randomRoom();
         roomInput.value = r;
         rc.textContent = r;
-        viewlink.textContent = location.origin + "/central.html?room=" + r;
-        viewlink.onclick = () => { navigator.clipboard.writeText(viewlink.textContent) };
         startBtn.disabled = false;
       };
 
@@ -88,7 +82,7 @@
   }
 
   stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-  setStatus('Compartilhando tela… aguarde o técnico entrar no link.');
+  setStatus('Compartilhando tela… aguarde o técnico informar o código.');
 } catch (err) {
   console.error('getDisplayMedia error:', err);
   setStatus(`Falha ao iniciar compartilhamento: ${err.name} — ${err.message}`);

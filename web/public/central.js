@@ -1790,18 +1790,11 @@ function handleCommandEffects(command, { local = false } = {}) {
     case 'share_start':
       state.commandState.shareActive = true;
       if (dom.controlStart) dom.controlStart.textContent = 'Encerrar visualização';
-      if (by !== 'tech') {
-        startLocalScreenShare();
-      }
       break;
     case 'share_stop':
       state.commandState.shareActive = false;
       if (dom.controlStart) dom.controlStart.textContent = 'Solicitar visualização';
-      if (by !== 'tech') {
-        stopLocalScreenShare(false);
-      } else {
-        clearRemoteVideo();
-      }
+      clearRemoteVideo();
       break;
     case 'remote_enable':
       state.commandState.remoteActive = true;

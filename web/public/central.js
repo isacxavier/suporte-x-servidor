@@ -170,6 +170,8 @@ const dom = {
   controlStart: document.getElementById('controlStart'),
   controlQuality: document.getElementById('controlQuality'),
   controlRemote: document.getElementById('controlRemote'),
+  controlFullscreen: document.getElementById('controlFullscreen'),
+  controlPip: document.getElementById('controlPip'),
   controlStats: document.getElementById('controlStats'),
   webSharePanel: document.getElementById('webSharePanel'),
   webShareRoom: document.getElementById('webShareRoom'),
@@ -218,6 +220,18 @@ const hideToast = () => {
   if (!dom.toast) return;
   dom.toast.textContent = '';
   dom.toast.hidden = true;
+};
+
+const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
+
+const updateFullscreenLabel = () => {
+  if (!dom.controlFullscreen) return;
+  dom.controlFullscreen.textContent = document.fullscreenElement ? 'Sair tela cheia' : 'Tela cheia';
+};
+
+const updatePipLabel = () => {
+  if (!dom.controlPip) return;
+  dom.controlPip.textContent = document.pictureInPictureElement ? 'Fechar janela' : 'Janela flutuante';
 };
 
 const clearQueueRetryTimer = () => {
@@ -1859,6 +1873,59 @@ const bindSessionControls = () => {
   }
 };
 
+const bindViewControls = () => {
+  if (dom.controlFullscreen) {
+    if (!document.fullscreenEnabled) {
+      dom.controlFullscreen.hidden = true;
+    } else {
+      updateFullscreenLabel();
+      dom.controlFullscreen.addEventListener('click', async () => {
+        if (!hasActiveVideo()) {
+          showToast('Nenhuma visualização ativa.');
+          return;
+        }
+        try {
+          if (document.fullscreenElement) {
+            await document.exitFullscreen();
+          } else {
+            await dom.sessionVideo.requestFullscreen();
+          }
+        } catch (error) {
+          console.error('Falha ao alternar tela cheia', error);
+          showToast('Não foi possível abrir a tela cheia.');
+        }
+      });
+      document.addEventListener('fullscreenchange', updateFullscreenLabel);
+    }
+  }
+
+  if (dom.controlPip) {
+    if (!document.pictureInPictureEnabled || typeof dom.sessionVideo?.requestPictureInPicture !== 'function') {
+      dom.controlPip.hidden = true;
+    } else {
+      updatePipLabel();
+      dom.controlPip.addEventListener('click', async () => {
+        if (!hasActiveVideo()) {
+          showToast('Nenhuma visualização ativa.');
+          return;
+        }
+        try {
+          if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture();
+          } else {
+            await dom.sessionVideo.requestPictureInPicture();
+          }
+        } catch (error) {
+          console.error('Falha ao abrir picture-in-picture', error);
+          showToast('Não foi possível abrir a janela flutuante.');
+        }
+      });
+      dom.sessionVideo?.addEventListener('enterpictureinpicture', updatePipLabel);
+      dom.sessionVideo?.addEventListener('leavepictureinpicture', updatePipLabel);
+    }
+  }
+};
+
 const formatTime = (timestamp) => {
   if (!timestamp) return '—';
   const date = new Date(timestamp);
@@ -2499,6 +2566,7 @@ const bootstrap = async () => {
   setSessionState(SessionStates.IDLE, null);
   resetCommandState();
   bindSessionControls();
+  bindViewControls();
   initChat();
   bindClosureForm();
   bindQueueRetryButton();

@@ -1,5 +1,10 @@
 import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
+  getAuth,
+  onAuthStateChanged,
+  signInAnonymously,
+} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import {
   getFirestore,
   collection,
   doc,
@@ -62,6 +67,8 @@ const state = {
 
 let firebaseAppInstance = null;
 let firestoreInstance = null;
+let authInstance = null;
+let authReadyPromise = null;
 let firebaseConfigCache = null;
 
 const QUEUE_RETRY_INITIAL_DELAY_MS = 5000;
@@ -85,24 +92,91 @@ const resolveFirebaseConfig = () => {
   return firebaseConfigCache;
 };
 
-const ensureFirestore = () => {
-  if (firestoreInstance) return firestoreInstance;
+const ensureFirebaseApp = () => {
+  if (firebaseAppInstance) return firebaseAppInstance;
   const config = resolveFirebaseConfig();
   if (!config) {
     console.warn('Firebase config ausente para o painel da central.');
     return null;
   }
   try {
-    if (!firebaseAppInstance) {
-      const apps = getApps();
-      firebaseAppInstance = apps.length ? apps[0] : initializeApp(config);
-    }
-    firestoreInstance = getFirestore(firebaseAppInstance);
+    const apps = getApps();
+    firebaseAppInstance = apps.length ? apps[0] : initializeApp(config);
   } catch (error) {
     console.error('Erro ao inicializar Firebase', error);
+    firebaseAppInstance = null;
+  }
+  return firebaseAppInstance;
+};
+
+const ensureFirestore = () => {
+  if (firestoreInstance) return firestoreInstance;
+  const app = ensureFirebaseApp();
+  if (!app) return null;
+  try {
+    firestoreInstance = getFirestore(app);
+  } catch (error) {
+    console.error('Erro ao inicializar Firestore', error);
     firestoreInstance = null;
   }
   return firestoreInstance;
+};
+
+const waitForAuthUser = () =>
+  new Promise((resolve, reject) => {
+    if (!authInstance) {
+      reject(new Error('Auth não inicializado'));
+      return;
+    }
+    const unsub = onAuthStateChanged(
+      authInstance,
+      (user) => {
+        if (user) {
+          unsub();
+          resolve(user);
+        }
+      },
+      (error) => {
+        unsub();
+        reject(error);
+      }
+    );
+  });
+
+const ensureAuth = async () => {
+  if (authReadyPromise) return authReadyPromise;
+  const app = ensureFirebaseApp();
+  if (!app) return null;
+  if (!authInstance) {
+    try {
+      authInstance = getAuth(app);
+    } catch (error) {
+      console.error('Erro ao inicializar Firebase Auth', error);
+      return null;
+    }
+  }
+  if (authInstance.currentUser) {
+    console.log('AUTH OK uid=', authInstance.currentUser.uid);
+    return authInstance.currentUser;
+  }
+
+  authReadyPromise = (async () => {
+    try {
+      await signInAnonymously(authInstance);
+    } catch (error) {
+      console.error('Falha ao autenticar no Firebase', error);
+      throw error;
+    }
+    const user = await waitForAuthUser();
+    console.log('AUTH OK uid=', user.uid);
+    return user;
+  })();
+
+  try {
+    return await authReadyPromise;
+  } finally {
+    authReadyPromise = null;
+  }
 };
 
 const sessionRealtimeSubscriptions = new Map();
@@ -797,8 +871,18 @@ const handleEventsSnapshot = (sessionId, snapshot) => {
   }
 };
 
-const subscribeToSessionRealtime = (sessionId) => {
+const subscribeToSessionRealtime = async (sessionId) => {
   if (!sessionId) return;
+  try {
+    const user = await ensureAuth();
+    if (!user) {
+      console.warn('Auth indisponível. Listener da sessão não será iniciado.', sessionId);
+      return;
+    }
+  } catch (error) {
+    console.error('Falha ao autenticar antes de escutar sessão', sessionId, error);
+    return;
+  }
   const db = ensureFirestore();
   if (!db) return;
   if (sessionRealtimeSubscriptions.has(sessionId)) return;
@@ -2375,9 +2459,15 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
     }
   }
 
+  let authUser = null;
+  try {
+    authUser = await ensureAuth();
+  } catch (error) {
+    console.error('Falha ao autenticar antes de carregar sessões', error);
+  }
   const db = ensureFirestore();
   const tech = getTechProfile();
-  if (!db) {
+  if (!db || !authUser) {
     state.sessions = [];
     renderSessions();
     if (!skipMetrics) updateMetricsFromSessions([]);
@@ -2602,6 +2692,11 @@ const bootstrap = async () => {
   bindQueueRetryButton();
   bindLegacyShareControls();
   loadQueue();
+  try {
+    await ensureAuth();
+  } catch (error) {
+    console.error('Falha ao autenticar no Firebase', error);
+  }
   await Promise.all([loadSessions(), loadMetrics()]);
 };
 

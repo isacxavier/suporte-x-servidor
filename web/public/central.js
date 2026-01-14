@@ -70,6 +70,15 @@ let firestoreInstance = null;
 let authInstance = null;
 let authReadyPromise = null;
 let firebaseConfigCache = null;
+const DEFAULT_FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyAooFHhk6ewqKPkXVX48CCWVVoV0eOUesI',
+  authDomain: 'suporte-x-19ae8.firebaseapp.com',
+  projectId: 'suporte-x-19ae8',
+  storageBucket: 'suporte-x-19ae8.firebasestorage.app',
+  messagingSenderId: '603259295557',
+  appId: '1:603259295557:web:00ca6e9fe02ff5fbe0902c',
+  measurementId: 'G-KF1CQYGZVF',
+};
 
 const QUEUE_RETRY_INITIAL_DELAY_MS = 5000;
 const QUEUE_RETRY_MAX_DELAY_MS = 60000;
@@ -88,7 +97,8 @@ const resolveFirebaseConfig = () => {
     typeof window !== 'undefined' ? window.__CENTRAL_CONFIG__?.firebase : null,
     typeof window !== 'undefined' ? window.__APP_CONFIG__?.firebase : null,
   ];
-  firebaseConfigCache = candidates.find((candidate) => candidate && typeof candidate === 'object') || null;
+  firebaseConfigCache =
+    candidates.find((candidate) => candidate && typeof candidate === 'object') || DEFAULT_FIREBASE_CONFIG;
   return firebaseConfigCache;
 };
 

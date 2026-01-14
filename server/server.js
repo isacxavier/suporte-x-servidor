@@ -39,6 +39,15 @@ const respondAck = (ack, payload) => {
 };
 
 let firebaseClientConfigCache = undefined;
+const DEFAULT_CENTRAL_FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyAooFHhk6ewqKPkXVX48CCWVVoV0eOUesI',
+  authDomain: 'suporte-x-19ae8.firebaseapp.com',
+  projectId: 'suporte-x-19ae8',
+  storageBucket: 'suporte-x-19ae8.firebasestorage.app',
+  messagingSenderId: '603259295557',
+  appId: '1:603259295557:web:00ca6e9fe02ff5fbe0902c',
+  measurementId: 'G-KF1CQYGZVF',
+};
 
 const resolveFirebaseClientConfig = () => {
   if (firebaseClientConfigCache !== undefined) {
@@ -104,7 +113,7 @@ const resolveFirebaseClientConfig = () => {
     config.projectId = firebaseProjectId;
   }
 
-  firebaseClientConfigCache = Object.keys(config).length ? config : null;
+  firebaseClientConfigCache = Object.keys(config).length ? config : DEFAULT_CENTRAL_FIREBASE_CONFIG;
   return firebaseClientConfigCache;
 };
 

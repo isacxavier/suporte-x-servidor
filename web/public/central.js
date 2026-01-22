@@ -462,6 +462,21 @@ const updateTechIdentifiers = (tech) => {
   return identifiers;
 };
 
+const syncAuthToTechProfile = (authUser) => {
+  if (!authUser || !authUser.uid) return;
+  updateTechDataset({ techUid: authUser.uid, uid: authUser.uid });
+  const profile = getTechProfile();
+  if (profile.uid !== authUser.uid) {
+    state.techProfile = {
+      ...profile,
+      uid: authUser.uid,
+      id: profile.id || authUser.uid,
+    };
+    updateTechIdentifiers(state.techProfile);
+  }
+  updateTechIdentity();
+};
+
 const getTechProfile = () => {
   const dataset = dom.techIdentity?.dataset || {};
   const candidates = [
@@ -605,7 +620,7 @@ const pickSessionQueryConstraint = (tech) => {
 const SOCKET_URL = window.location.origin;
 const socket = window.io
   ? window.io(SOCKET_URL, {
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
       withCredentials: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -2518,6 +2533,9 @@ const loadSessions = async ({ skipMetrics = false } = {}) => {
   } catch (error) {
     console.error('Falha ao autenticar antes de carregar sessões', error);
   }
+  if (authUser) {
+    syncAuthToTechProfile(authUser);
+  }
   const db = ensureFirestore();
   const tech = getTechProfile();
   if (!db || !authUser) {
@@ -2746,7 +2764,8 @@ const bootstrap = async () => {
   bindLegacyShareControls();
   loadQueue();
   try {
-    await ensureAuth();
+    const authUser = await ensureAuth();
+    if (authUser) syncAuthToTechProfile(authUser);
   } catch (error) {
     console.error('Falha ao autenticar no Firebase', error);
   }
@@ -2754,12 +2773,20 @@ const bootstrap = async () => {
 };
 
 function handleSocketConnect() {
+  if (socket?.id) {
+    const transport = socket.io?.engine?.transport?.name || 'desconhecido';
+    console.log('[socket] connected', socket.id, transport);
+  }
   addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
   state.joinedSessionId = null;
   joinSelectedSession();
   if (state.legacyShare.pendingRoom) {
     activateLegacyShare(state.legacyShare.pendingRoom);
   }
+}
+
+function handleSocketConnectError(error) {
+  console.error('[socket] connect_error', error);
 }
 
 function handleSocketDisconnect() {
@@ -2922,6 +2949,7 @@ async function handleSignalCandidate({ sessionId, candidate }) {
 function setupSocketHandlers() {
   if (!socket) return;
   registerSocketHandler('connect', handleSocketConnect);
+  registerSocketHandler('connect_error', handleSocketConnectError);
   registerSocketHandler('disconnect', handleSocketDisconnect);
   registerSocketHandler('queue:updated', handleQueueUpdated);
   registerSocketHandler('session:updated', handleSessionUpdated);

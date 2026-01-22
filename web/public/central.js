@@ -79,6 +79,7 @@ const DEFAULT_FIREBASE_CONFIG = {
   appId: '1:603259295557:web:00ca6e9fe02ff5fbe0902c',
   measurementId: 'G-KF1CQYGZVF',
 };
+const REQUIRED_FIREBASE_KEYS = ['apiKey', 'authDomain', 'projectId'];
 
 const QUEUE_RETRY_INITIAL_DELAY_MS = 5000;
 const QUEUE_RETRY_MAX_DELAY_MS = 60000;
@@ -87,18 +88,60 @@ let queueRetryTimer = null;
 let queueLoadPromise = null;
 let queueUnavailable = false;
 
+const isValidFirebaseConfig = (config) => {
+  if (!config || typeof config !== 'object') return false;
+  return REQUIRED_FIREBASE_KEYS.every(
+    (key) => typeof config[key] === 'string' && config[key].trim().length > 0
+  );
+};
+
+const mergeWithDefaultFirebaseConfig = (config) => {
+  if (!config || typeof config !== 'object') return { ...DEFAULT_FIREBASE_CONFIG };
+  const filteredEntries = Object.entries(config).filter(([, value]) => value !== undefined && value !== null);
+  return { ...DEFAULT_FIREBASE_CONFIG, ...Object.fromEntries(filteredEntries) };
+};
+
+const maskApiKey = (apiKey) => {
+  if (typeof apiKey !== 'string' || apiKey.trim().length === 0) return 'missing';
+  const trimmed = apiKey.trim();
+  if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}...${trimmed.slice(-2)}`;
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+};
+
+const logFirebaseConfigChoice = (source, config) => {
+  console.info('[Firebase] Usando config de:', source, {
+    projectId: config?.projectId,
+    authDomain: config?.authDomain,
+    apiKey: maskApiKey(config?.apiKey),
+    hasApiKey: Boolean(config?.apiKey),
+    hasAuthDomain: Boolean(config?.authDomain),
+    hasProjectId: Boolean(config?.projectId),
+  });
+};
+
 const resolveFirebaseConfig = () => {
   if (firebaseConfigCache) return firebaseConfigCache;
-  const candidates = [
-    typeof window !== 'undefined' ? window.__FIREBASE_CONFIG__ : null,
-    typeof window !== 'undefined' ? window.firebaseConfig : null,
-    typeof window !== 'undefined' ? window.__firebaseConfig__ : null,
-    typeof window !== 'undefined' ? window.__firebaseConfig : null,
-    typeof window !== 'undefined' ? window.__CENTRAL_CONFIG__?.firebase : null,
-    typeof window !== 'undefined' ? window.__APP_CONFIG__?.firebase : null,
+  const sources = [
+    { name: 'window.__FIREBASE_CONFIG__', config: typeof window !== 'undefined' ? window.__FIREBASE_CONFIG__ : null },
+    { name: 'window.firebaseConfig', config: typeof window !== 'undefined' ? window.firebaseConfig : null },
+    { name: 'window.__firebaseConfig__', config: typeof window !== 'undefined' ? window.__firebaseConfig__ : null },
+    { name: 'window.__firebaseConfig', config: typeof window !== 'undefined' ? window.__firebaseConfig : null },
+    { name: 'window.__CENTRAL_CONFIG__.firebase', config: typeof window !== 'undefined' ? window.__CENTRAL_CONFIG__?.firebase : null },
+    { name: 'window.__APP_CONFIG__.firebase', config: typeof window !== 'undefined' ? window.__APP_CONFIG__?.firebase : null },
   ];
-  firebaseConfigCache =
-    candidates.find((candidate) => candidate && typeof candidate === 'object') || DEFAULT_FIREBASE_CONFIG;
+
+  for (const source of sources) {
+    if (!isValidFirebaseConfig(source.config)) {
+      continue;
+    }
+    const mergedConfig = mergeWithDefaultFirebaseConfig(source.config);
+    firebaseConfigCache = mergedConfig;
+    logFirebaseConfigChoice(source.name, mergedConfig);
+    return firebaseConfigCache;
+  }
+
+  firebaseConfigCache = mergeWithDefaultFirebaseConfig(DEFAULT_FIREBASE_CONFIG);
+  logFirebaseConfigChoice('DEFAULT_FIREBASE_CONFIG', firebaseConfigCache);
   return firebaseConfigCache;
 };
 

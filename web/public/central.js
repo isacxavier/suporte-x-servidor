@@ -8,11 +8,13 @@ import {
   getFirestore,
   collection,
   doc,
+  addDoc,
   getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
   where,
   Timestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
@@ -44,6 +46,10 @@ const state = {
   media: {
     sessionId: null,
     pc: null,
+    eventsSessionId: null,
+    eventsUnsub: null,
+    eventsRef: null,
+    processedEventIds: new Set(),
     local: {
       screen: null,
       audio: null,
@@ -1274,6 +1280,17 @@ const teardownPeerConnection = () => {
   }
   state.media.pc = null;
   state.media.sessionId = null;
+  if (state.media.eventsUnsub) {
+    try {
+      state.media.eventsUnsub();
+    } catch (err) {
+      console.warn('Falha ao cancelar listener de eventos WebRTC', err);
+    }
+  }
+  state.media.eventsUnsub = null;
+  state.media.eventsRef = null;
+  state.media.eventsSessionId = null;
+  state.media.processedEventIds = new Set();
   state.media.senders = { screen: [], audio: [] };
   stopStreamTracks(state.media.local.screen);
   stopStreamTracks(state.media.local.audio);
@@ -1293,9 +1310,24 @@ const ensurePeerConnection = (sessionId) => {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   });
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate && socket && !socket.disconnected) {
+  pc.onicecandidate = async (event) => {
+    if (!event.candidate) return;
+    if (socket && !socket.disconnected) {
       socket.emit('signal:candidate', { sessionId, candidate: event.candidate });
+    }
+    if (state.media.eventsRef && state.media.eventsSessionId === sessionId) {
+      try {
+        await addDoc(state.media.eventsRef, {
+          type: 'ice',
+          from: 'tech',
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          createdAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.warn('Falha ao registrar ICE no Firestore', error);
+      }
     }
   };
 
@@ -1357,6 +1389,84 @@ const ensurePeerConnection = (sessionId) => {
   state.media.pc = pc;
   state.media.sessionId = sessionId;
   return pc;
+};
+
+const ensureWebRtcEventListener = async (sessionId) => {
+  if (!sessionId) return;
+  if (state.media.eventsSessionId === sessionId && state.media.eventsUnsub) return;
+  if (state.media.eventsUnsub) {
+    try {
+      state.media.eventsUnsub();
+    } catch (error) {
+      console.warn('Falha ao limpar listener antigo de eventos WebRTC', error);
+    }
+  }
+  state.media.eventsUnsub = null;
+  state.media.eventsRef = null;
+  state.media.eventsSessionId = null;
+  state.media.processedEventIds = new Set();
+
+  try {
+    const user = await ensureAuth();
+    if (!user) {
+      console.warn('Auth indisponível. Listener WebRTC não será iniciado.', sessionId);
+      return;
+    }
+  } catch (error) {
+    console.error('Falha ao autenticar antes do WebRTC', sessionId, error);
+    return;
+  }
+
+  const db = ensureFirestore();
+  if (!db) return;
+  const pc = ensurePeerConnection(sessionId);
+  if (!pc) return;
+
+  const eventsRef = collection(db, 'sessions', sessionId, 'events');
+  const eventsQuery = query(eventsRef, orderBy('createdAt', 'asc'));
+  state.media.eventsRef = eventsRef;
+  state.media.eventsSessionId = sessionId;
+  state.media.eventsUnsub = onSnapshot(
+    eventsQuery,
+    async (snapshot) => {
+      for (const change of snapshot.docChanges()) {
+        if (change.type !== 'added') continue;
+        if (state.media.processedEventIds.has(change.doc.id)) continue;
+        state.media.processedEventIds.add(change.doc.id);
+        const data = change.doc.data() || {};
+        if (data.from !== 'client') continue;
+        if (data.type === 'offer' && data.sdp) {
+          try {
+            await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await addDoc(eventsRef, {
+              type: 'answer',
+              from: 'tech',
+              sdp: pc.localDescription?.sdp || answer.sdp,
+              createdAt: serverTimestamp(),
+            });
+          } catch (error) {
+            console.error('Erro ao processar oferta WebRTC', error);
+          }
+        }
+        if (data.type === 'ice' && data.candidate) {
+          try {
+            await pc.addIceCandidate({
+              candidate: data.candidate,
+              sdpMid: data.sdpMid ?? null,
+              sdpMLineIndex: data.sdpMLineIndex ?? null,
+            });
+          } catch (error) {
+            console.error('Erro ao adicionar ICE WebRTC', error);
+          }
+        }
+      }
+    },
+    (error) => {
+      console.error('Falha ao escutar eventos WebRTC da sessão', sessionId, error);
+    }
+  );
 };
 
 const setLegacyStatus = (message) => {
@@ -1774,6 +1884,25 @@ const joinSelectedSession = () => {
       });
     }
   });
+};
+
+const syncWebRtcForSelectedSession = () => {
+  const session = getSelectedSession();
+  if (!session || session.status !== 'active') {
+    if (state.media.eventsUnsub) {
+      try {
+        state.media.eventsUnsub();
+      } catch (error) {
+        console.warn('Falha ao cancelar listener WebRTC da sessão', error);
+      }
+    }
+    state.media.eventsUnsub = null;
+    state.media.eventsRef = null;
+    state.media.eventsSessionId = null;
+    state.media.processedEventIds = new Set();
+    return;
+  }
+  void ensureWebRtcEventListener(session.sessionId);
 };
 
 const sendChatMessage = (text) => {
@@ -2401,6 +2530,7 @@ const renderSessions = () => {
   renderChatForSession();
   updateMediaDisplay();
   joinSelectedSession();
+  syncWebRtcForSelectedSession();
 };
 
 const renderMetrics = () => {

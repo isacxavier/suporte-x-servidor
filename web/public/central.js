@@ -602,6 +602,7 @@ const filterSessionsForCurrentTech = (sessions) => {
 const pickSessionQueryConstraint = (tech) => {
   if (!tech || typeof tech !== 'object') return null;
   const attempts = [
+    ['tech.techUid', tech.uid],
     ['techUid', tech.uid],
     ['techId', tech.id],
     ['techEmail', tech.email],

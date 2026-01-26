@@ -15,6 +15,10 @@
   --success: #34d399;
   --warning: #fbbf24;
   --shadow: 0 30px 60px rgba(2, 6, 23, 0.45);
+  --sidebar-width: clamp(240px, 22vw, 320px);
+  --dashboard-padding: clamp(18px, 2.6vw, 36px);
+  --panel-padding: clamp(14px, 1.8vw, 18px);
+  --panel-gap: clamp(12px, 1.6vw, 18px);
 }
 
 body[data-theme="light"] {
@@ -55,7 +59,7 @@ body {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: var(--sidebar-width) 1fr;
   width: 100%;
   min-height: 100vh;
   min-width: 0;
@@ -390,7 +394,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 28px 36px 18px;
+  padding: clamp(20px, 2.4vw, 28px) var(--dashboard-padding) clamp(14px, 2vw, 18px);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(20px);
 }
@@ -470,7 +474,7 @@ body {
 }
 
 .dashboard {
-  padding: 24px 36px 40px;
+  padding: clamp(20px, 2.4vw, 24px) var(--dashboard-padding) clamp(28px, 3vw, 40px);
   overflow-y: auto;
   flex: 1;
   display: flex;
@@ -521,8 +525,11 @@ body {
 
 .session-area {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr) minmax(260px, 1fr);
-  gap: 18px;
+  grid-template-columns:
+    minmax(clamp(200px, 24vw, 260px), 1fr)
+    minmax(0, 2fr)
+    minmax(clamp(200px, 24vw, 260px), 1fr);
+  gap: var(--panel-gap);
   align-items: start;
 }
 
@@ -541,7 +548,7 @@ body {
 }
 
 .panel-header {
-  padding: 16px 18px 12px;
+  padding: clamp(12px, 1.6vw, 16px) clamp(14px, 1.7vw, 18px) clamp(10px, 1.4vw, 12px);
   border-bottom: 1px solid var(--border);
 }
 
@@ -551,7 +558,7 @@ body {
 }
 
 .panel-body {
-  padding: 18px;
+  padding: var(--panel-padding);
   display: grid;
   gap: 16px;
 }
@@ -903,7 +910,7 @@ body {
 
 @media (max-width: 1024px) {
   .app-shell {
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: clamp(220px, 28vw, 260px) 1fr;
   }
 
   .topbar {

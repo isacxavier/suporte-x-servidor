@@ -545,6 +545,7 @@ body {
   display: flex;
   flex-direction: column;
   contain: content;
+  min-height: 0;
 }
 
 .panel-header {
@@ -561,6 +562,7 @@ body {
   padding: var(--panel-padding);
   display: grid;
   gap: 16px;
+  min-height: 0;
 }
 
 .web-share {
@@ -773,9 +775,10 @@ body {
 }
 
 .chat-area {
-  display: grid;
-  grid-template-rows: 1fr auto auto;
-  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   position: relative;
   gap: 12px;
 }
@@ -783,6 +786,8 @@ body {
 .chat-thread {
   display: grid;
   gap: 12px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
   padding-bottom: 4px;

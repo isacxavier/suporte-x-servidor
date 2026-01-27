@@ -785,6 +785,18 @@ body {
   overflow: hidden;
 }
 
+.chat-panel {
+  height: clamp(360px, 58vh, 620px);
+}
+
+.chat-panel .panel-body {
+  flex: 1;
+}
+
+.chat-panel .chat-area {
+  height: 100%;
+}
+
 .chat-thread {
   display: grid;
   gap: 12px;

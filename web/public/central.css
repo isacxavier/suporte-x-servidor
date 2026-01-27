@@ -530,10 +530,12 @@ body {
     minmax(0, 2fr)
     minmax(clamp(200px, 24vw, 260px), 1fr);
   gap: var(--panel-gap);
+  min-height: 0;
 }
 
 .session-area > * {
   min-width: 0;
+  min-height: 0;
 }
 
 /* =========================================================
@@ -544,6 +546,7 @@ body {
   grid-template-columns: 1fr 1.6fr 1fr;
   gap: var(--panel-gap);
   align-items: stretch;
+  min-height: 0;
 }
 
 .triple-panels > .equal-panel {
@@ -653,6 +656,7 @@ body {
   flex-direction: column;
   min-height: 0;
   gap: 16px;
+  overflow: hidden;
 }
 
 .device-panel .device-info {
@@ -902,6 +906,7 @@ body {
   border-radius: 16px;
   background: rgba(148, 163, 184, 0.12);
   font-size: 13px;
+  flex: 0 0 auto;
 }
 
 .message.self {
@@ -1023,6 +1028,7 @@ body {
   flex-direction: column;
   min-height: 0;
   gap: 18px;
+  overflow: hidden;
 }
 
 .session-panel .session-main {
@@ -1035,6 +1041,26 @@ body {
 
 .session-panel .session-metrics {
   flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.session-panel .session-metrics .indicator {
+  padding: 12px;
+  min-height: 92px;
+  gap: 6px;
+}
+
+.session-panel .session-metrics .indicator strong {
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.session-panel .session-metrics .indicator span {
+  font-size: 12px;
+  opacity: 0.85;
 }
 
 @media (max-width: 1320px) {
@@ -1045,6 +1071,10 @@ body {
   .panel:nth-child(1),
   .panel:nth-child(3) {
     order: 2;
+  }
+
+  .session-panel .session-metrics {
+    grid-template-columns: 1fr;
   }
 }
 

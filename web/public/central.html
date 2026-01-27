@@ -98,34 +98,54 @@
           </section>
 
           <section class="session-area triple-panels">
-            <aside class="panel equal-panel">
+            <aside class="panel equal-panel device-panel">
               <div class="panel-header">
                 <h2>Contexto do dispositivo</h2>
               </div>
               <div class="panel-body">
-                <div class="context-grid">
-                  <div class="context-item">
-                    <strong>Aparelho</strong>
-                    <span id="contextDevice">—</span>
+                <div class="device-info">
+                  <div class="context-grid">
+                    <div class="context-item">
+                      <strong>Aparelho</strong>
+                      <span id="contextDevice">—</span>
+                    </div>
+                    <div class="context-item">
+                      <strong>Identificação</strong>
+                      <span id="contextIdentity">—</span>
+                    </div>
+                    <div class="context-item">
+                      <strong>Rede atual</strong>
+                      <span id="contextNetwork">Aguardando dados do app</span>
+                    </div>
+                    <div class="context-item">
+                      <strong>Saúde do dispositivo</strong>
+                      <span id="contextHealth">—</span>
+                    </div>
+                    <div class="context-item">
+                      <strong>Permissões críticas</strong>
+                      <span id="contextPermissions">—</span>
+                    </div>
                   </div>
-                  <div class="context-item">
-                    <strong>Identificação</strong>
-                    <span id="contextIdentity">—</span>
-                  </div>
-                  <div class="context-item">
-                    <strong>Rede atual</strong>
-                    <span id="contextNetwork">Aguardando dados do app</span>
-                  </div>
-                  <div class="context-item">
-                    <strong>Saúde do dispositivo</strong>
-                    <span id="contextHealth">—</span>
-                  </div>
-                  <div class="context-item">
-                    <strong>Permissões críticas</strong>
-                    <span id="contextPermissions">—</span>
+                  <div class="device-extras">
+                    <div class="context-item highlight">
+                      <strong>Armazenamento livre</strong>
+                      <span>12GB de 128GB</span>
+                    </div>
+                    <div class="context-item highlight">
+                      <strong>Nível de bateria</strong>
+                      <span>42% (Carregando)</span>
+                    </div>
+                    <div class="context-item highlight">
+                      <strong>Temperatura do dispositivo</strong>
+                      <span>36°C</span>
+                    </div>
+                    <figure class="device-image">
+                      <img src="/icon-192.png" alt="Imagem do dispositivo" />
+                      <figcaption>Imagem do dispositivo</figcaption>
+                    </figure>
                   </div>
                 </div>
-                <div>
+                <div class="device-timeline">
                   <div class="section-title">Timeline</div>
                   <div class="timeline" id="contextTimeline">
                     <div class="timeline-entry">Sem eventos registrados ainda.</div>
@@ -134,50 +154,52 @@
               </div>
             </aside>
 
-            <section class="panel equal-panel">
+            <section class="panel equal-panel session-panel">
               <div class="panel-header">
                 <h2>Sessão em andamento</h2>
               </div>
-              <div class="panel-body" style="gap: 18px;">
-                <div class="web-share" id="webSharePanel">
-                  <div class="web-share-header">
-                    <strong>Compartilhamento web (Send)</strong>
-                    <span class="muted small">Informe o código gerado no navegador do cliente.</span>
-                  </div>
-                  <div class="web-share-controls">
-                    <input id="webShareRoom" type="text" inputmode="numeric" placeholder="Código de 6 dígitos" maxlength="6" />
-                    <button type="button" id="webShareConnect">Conectar</button>
-                    <button type="button" id="webShareDisconnect" disabled>Desconectar</button>
-                  </div>
-                  <div class="web-share-status muted small" id="webShareStatus">Nenhum compartilhamento web ativo.</div>
-                </div>
-                <div class="video-shell" id="videoShell">
-                  <video id="sessionVideo" autoplay playsinline muted hidden></video>
-                  <audio id="sessionAudio" autoplay hidden></audio>
-                  <div class="placeholder" id="sessionPlaceholder">Aguardando seleção de sessão</div>
-                  <div class="control-menu-backdrop" id="controlMenuBackdrop" hidden></div>
-                  <div class="control-menu">
-                    <div class="control-menu-panel" id="controlMenuPanel" role="menu" aria-hidden="true">
-                      <button type="button" id="controlStart" role="menuitem">Solicitar visualização</button>
-                      <button type="button" id="controlQuality" role="menuitem">Iniciar chamada</button>
-                      <button type="button" id="controlRemote" role="menuitem">Solicitar acesso remoto</button>
-                      <button type="button" id="controlFullscreen" role="menuitem">Tela cheia</button>
-                      <button type="button" id="controlPip" role="menuitem">Janela flutuante</button>
-                      <button type="button" id="controlStats" role="menuitem">Encerrar suporte</button>
+              <div class="panel-body">
+                <div class="session-main">
+                  <div class="web-share" id="webSharePanel">
+                    <div class="web-share-header">
+                      <strong>Compartilhamento web (Send)</strong>
+                      <span class="muted small">Informe o código gerado no navegador do cliente.</span>
                     </div>
-                    <button
-                      type="button"
-                      id="controlMenuToggle"
-                      class="control-menu-toggle"
-                      aria-expanded="false"
-                      aria-controls="controlMenuPanel"
-                      aria-label="Abrir menu de ações"
-                    >
-                      <span class="control-menu-dots" aria-hidden="true"></span>
-                    </button>
+                    <div class="web-share-controls">
+                      <input id="webShareRoom" type="text" inputmode="numeric" placeholder="Código de 6 dígitos" maxlength="6" />
+                      <button type="button" id="webShareConnect">Conectar</button>
+                      <button type="button" id="webShareDisconnect" disabled>Desconectar</button>
+                    </div>
+                    <div class="web-share-status muted small" id="webShareStatus">Nenhum compartilhamento web ativo.</div>
+                  </div>
+                  <div class="video-shell" id="videoShell">
+                    <video id="sessionVideo" autoplay playsinline muted hidden></video>
+                    <audio id="sessionAudio" autoplay hidden></audio>
+                    <div class="placeholder" id="sessionPlaceholder">Aguardando seleção de sessão</div>
+                    <div class="control-menu-backdrop" id="controlMenuBackdrop" hidden></div>
+                    <div class="control-menu">
+                      <div class="control-menu-panel" id="controlMenuPanel" role="menu" aria-hidden="true">
+                        <button type="button" id="controlStart" role="menuitem">Solicitar visualização</button>
+                        <button type="button" id="controlQuality" role="menuitem">Iniciar chamada</button>
+                        <button type="button" id="controlRemote" role="menuitem">Solicitar acesso remoto</button>
+                        <button type="button" id="controlFullscreen" role="menuitem">Tela cheia</button>
+                        <button type="button" id="controlPip" role="menuitem">Janela flutuante</button>
+                        <button type="button" id="controlStats" role="menuitem">Encerrar suporte</button>
+                      </div>
+                      <button
+                        type="button"
+                        id="controlMenuToggle"
+                        class="control-menu-toggle"
+                        aria-expanded="false"
+                        aria-controls="controlMenuPanel"
+                        aria-label="Abrir menu de ações"
+                      >
+                        <span class="control-menu-dots" aria-hidden="true"></span>
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div class="indicators">
+                <div class="indicators session-metrics">
                   <div class="indicator">
                     <strong>Rede do cliente</strong>
                     <span id="indicatorNetwork">—</span>
@@ -201,15 +223,17 @@
               <div class="panel-body chat-area">
                 <div class="chat-thread" aria-live="polite" id="chatThread">
                 </div>
-                <div class="quick-replies">
-                  <button type="button" data-reply="Olá, sou do Suporte X. Vou assumir o seu atendimento agora.">Enviar mensagem inicial</button>
-                  <button type="button" data-reply="Para continuar, preciso que libere o compartilhamento de tela nas configurações.">Solicitar permissão de acessibilidade</button>
-                  <button type="button" data-reply="Vou encerrar o atendimento por aqui. Qualquer novidade é só chamar!">Avisar sobre encerramento</button>
+                <div class="chat-footer">
+                  <div class="quick-replies">
+                    <button type="button" data-reply="Olá, sou do Suporte X. Vou assumir o seu atendimento agora.">Enviar mensagem inicial</button>
+                    <button type="button" data-reply="Para continuar, preciso que libere o compartilhamento de tela nas configurações.">Solicitar permissão de acessibilidade</button>
+                    <button type="button" data-reply="Vou encerrar o atendimento por aqui. Qualquer novidade é só chamar!">Avisar sobre encerramento</button>
+                  </div>
+                  <form class="chat-form" id="chatForm">
+                    <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" id="chatInput" />
+                    <button type="submit">Enviar</button>
+                  </form>
                 </div>
-                <form class="chat-form" id="chatForm">
-                  <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" id="chatInput" />
-                  <button type="submit">Enviar</button>
-                </form>
               </div>
             </aside>
           </section>

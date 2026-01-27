@@ -558,6 +558,15 @@ body {
   min-height: 0;
 }
 
+.device-panel,
+.session-panel,
+.chat-panel {
+  height: clamp(520px, 62vh, 720px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -637,6 +646,58 @@ body {
 .context-grid {
   display: grid;
   gap: 14px;
+}
+
+.device-panel .panel-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 16px;
+}
+
+.device-panel .device-info {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  display: grid;
+  gap: 16px;
+}
+
+.device-extras {
+  display: grid;
+  gap: 12px;
+}
+
+.device-extras .highlight strong {
+  color: #7dd3fc;
+}
+
+.device-image {
+  margin: 0;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px dashed var(--border);
+  background: rgba(15, 23, 42, 0.35);
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.device-image img {
+  width: 140px;
+  height: auto;
+  filter: drop-shadow(0 10px 18px rgba(2, 6, 23, 0.4));
+}
+
+.device-image figcaption {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.device-panel .device-timeline {
+  flex: 0 0 auto;
 }
 
 .context-item {
@@ -827,7 +888,9 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
   gap: 12px;
   padding-right: 6px;
   padding-bottom: 4px;
@@ -862,16 +925,22 @@ body {
   cursor: pointer;
 }
 
+.chat-footer {
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  padding-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
 .chat-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  position: sticky;
-  bottom: 0;
-  padding-top: 12px;
   margin-top: 0;
-  background: var(--surface);
   box-shadow: 0 -10px 24px rgba(2, 6, 23, 0.18);
 }
 
@@ -947,6 +1016,25 @@ body {
   color: #02131f;
   font-weight: 600;
   cursor: pointer;
+}
+
+.session-panel .panel-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 18px;
+}
+
+.session-panel .session-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 18px;
+  overflow: hidden;
+}
+
+.session-panel .session-metrics {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 1320px) {

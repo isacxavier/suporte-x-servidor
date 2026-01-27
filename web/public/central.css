@@ -781,6 +781,8 @@ body {
   min-height: 0;
   position: relative;
   gap: 12px;
+  height: clamp(320px, 55vh, 520px);
+  overflow: hidden;
 }
 
 .chat-thread {
@@ -823,8 +825,10 @@ body {
 }
 
 .chat-form {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
+  align-items: center;
   position: sticky;
   bottom: 0;
   padding-top: 12px;
@@ -840,6 +844,7 @@ body {
   border: 1px solid var(--border);
   background: var(--surface-strong);
   color: var(--text);
+  min-width: 0;
 }
 
 .chat-form button {

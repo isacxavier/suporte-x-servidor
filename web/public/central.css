@@ -545,10 +545,15 @@ body {
   display: grid;
   grid-template-columns: 1fr 1.6fr 1fr;
   gap: var(--panel-gap);
+  height: clamp(520px, 62vh, 720px);
   align-items: stretch;
   min-height: 0;
 }
 
+.triple-panels > .panel,
+.triple-panels > .device-panel,
+.triple-panels > .session-panel,
+.triple-panels > .chat-panel,
 .triple-panels > .equal-panel {
   height: 100%;
   min-height: 0;
@@ -564,7 +569,7 @@ body {
 .device-panel,
 .session-panel,
 .chat-panel {
-  height: clamp(520px, 62vh, 720px);
+  height: 100% !important;
   display: flex;
   flex-direction: column;
   min-height: 0;

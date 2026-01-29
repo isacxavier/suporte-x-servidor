@@ -2788,6 +2788,33 @@ const initChat = () => {
   });
 };
 
+const bindPanelsToSessionHeight = () => {
+  const triple = document.querySelector('.triple-panels');
+  const sessionPanel = document.querySelector('.session-panel');
+  if (!triple || !sessionPanel) return;
+
+  let rafId = null;
+  const applyHeight = () => {
+    rafId = null;
+    const height = Math.ceil(sessionPanel.getBoundingClientRect().height);
+    triple.style.setProperty('--session-panel-h', `${height}px`);
+  };
+
+  const observer = trackObserver(
+    new ResizeObserver(() => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(applyHeight);
+    })
+  );
+  observer.observe(sessionPanel);
+
+  applyHeight();
+  window.addEventListener('resize', () => {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyHeight);
+  });
+};
+
 const bindClosureForm = () => {
   if (!dom.closureForm) return;
   dom.closureForm.addEventListener('submit', async (event) => {
@@ -2886,6 +2913,7 @@ const bootstrap = async () => {
   updateTechIdentity();
   setSessionState(SessionStates.IDLE, null);
   resetCommandState();
+  bindPanelsToSessionHeight();
   bindSessionControls();
   bindControlMenu();
   bindViewControls();

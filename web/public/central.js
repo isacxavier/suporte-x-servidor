@@ -46,6 +46,7 @@ const state = {
   media: {
     sessionId: null,
     pc: null,
+    ctrlChannel: null,
     eventsSessionId: null,
     eventsUnsub: null,
     eventsRef: null,
@@ -359,7 +360,89 @@ const hideToast = () => {
   dom.toast.hidden = true;
 };
 
+const CTRL_CHANNEL_LABEL = 'ctrl';
+const DRAG_THRESHOLD_PX = 8;
+
 const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
+
+const canSendControlCommand = () =>
+  Boolean(state.commandState.remoteActive && state.media.ctrlChannel && state.media.ctrlChannel.readyState === 'open');
+
+const setCtrlChannel = (channel) => {
+  if (!channel) return;
+  if (state.media.ctrlChannel && state.media.ctrlChannel !== channel) {
+    try {
+      state.media.ctrlChannel.onopen = null;
+      state.media.ctrlChannel.onclose = null;
+      state.media.ctrlChannel.onerror = null;
+      state.media.ctrlChannel.close();
+    } catch (error) {
+      console.warn('Falha ao substituir DataChannel de controle', error);
+    }
+  }
+  state.media.ctrlChannel = channel;
+  channel.onopen = () => console.log('[CTRL] open');
+  channel.onclose = () => console.log('[CTRL] close');
+  channel.onerror = (event) => console.log('[CTRL] error', event);
+};
+
+const ensureCtrlChannelForOffer = (pc) => {
+  if (!pc) return null;
+  if (state.media.ctrlChannel && state.media.ctrlChannel.readyState !== 'closed') {
+    return state.media.ctrlChannel;
+  }
+  try {
+    const channel = pc.createDataChannel(CTRL_CHANNEL_LABEL, { ordered: true });
+    setCtrlChannel(channel);
+    return channel;
+  } catch (error) {
+    console.warn('Falha ao criar DataChannel de controle', error);
+    return null;
+  }
+};
+
+const sendCtrlCommand = (command) => {
+  if (!command || !canSendControlCommand()) return;
+  try {
+    state.media.ctrlChannel.send(JSON.stringify(command));
+  } catch (error) {
+    console.warn('Falha ao enviar comando de controle', error);
+  }
+};
+
+const getNormalizedXY = (videoEl, event) => {
+  const rect = videoEl.getBoundingClientRect();
+  const vw = videoEl.videoWidth || rect.width;
+  const vh = videoEl.videoHeight || rect.height;
+
+  const displayAspect = rect.width / rect.height;
+  const videoAspect = vw / vh;
+
+  let drawW;
+  let drawH;
+  let offX;
+  let offY;
+
+  if (displayAspect > videoAspect) {
+    drawH = rect.height;
+    drawW = drawH * videoAspect;
+    offX = (rect.width - drawW) / 2;
+    offY = 0;
+  } else {
+    drawW = rect.width;
+    drawH = drawW / videoAspect;
+    offX = 0;
+    offY = (rect.height - drawH) / 2;
+  }
+
+  const x = (event.clientX - rect.left - offX) / drawW;
+  const y = (event.clientY - rect.top - offY) / drawH;
+
+  return {
+    x: Math.min(1, Math.max(0, x)),
+    y: Math.min(1, Math.max(0, y)),
+  };
+};
 
 const updateFullscreenLabel = () => {
   if (!dom.controlFullscreen) return;
@@ -1273,11 +1356,20 @@ const teardownPeerConnection = () => {
       state.media.pc.ontrack = null;
       state.media.pc.onicecandidate = null;
       state.media.pc.onconnectionstatechange = null;
+      state.media.pc.ondatachannel = null;
       state.media.pc.close();
     } catch (err) {
       console.warn('Falha ao encerrar PeerConnection', err);
     }
   }
+  if (state.media.ctrlChannel) {
+    try {
+      state.media.ctrlChannel.close();
+    } catch (error) {
+      console.warn('Falha ao encerrar DataChannel de controle', error);
+    }
+  }
+  state.media.ctrlChannel = null;
   state.media.pc = null;
   state.media.sessionId = null;
   if (state.media.eventsUnsub) {
@@ -1335,6 +1427,13 @@ const ensurePeerConnection = (sessionId) => {
     if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
       clearRemoteVideo();
       clearRemoteAudio();
+    }
+  };
+
+  pc.ondatachannel = (event) => {
+    if (!event?.channel) return;
+    if (event.channel.label === CTRL_CHANNEL_LABEL) {
+      setCtrlChannel(event.channel);
     }
   };
 
@@ -1694,6 +1793,7 @@ const startLocalScreenShare = async () => {
       if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
     }
     if (dom.sessionPlaceholder) dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
+    ensureCtrlChannelForOffer(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('signal:offer', { sessionId: session.sessionId, sdp: pc.localDescription });
@@ -1752,6 +1852,7 @@ const startLocalCall = async () => {
     state.media.senders.audio = senders;
     stopStreamTracks(state.media.local.audio);
     state.media.local.audio = stream;
+    ensureCtrlChannelForOffer(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('signal:offer', { sessionId: session.sessionId, sdp: pc.localDescription });
@@ -2235,6 +2336,125 @@ const bindViewControls = () => {
       dom.sessionVideo?.addEventListener('leavepictureinpicture', updatePipLabel);
     }
   }
+};
+
+const bindRemoteControlEvents = () => {
+  if (!dom.sessionVideo) return;
+  const videoEl = dom.sessionVideo;
+  if (!videoEl.hasAttribute('tabindex')) {
+    videoEl.tabIndex = 0;
+  }
+
+  let lastToastAt = 0;
+  const warnControlUnavailable = () => {
+    const now = Date.now();
+    if (now - lastToastAt < 2000) return;
+    lastToastAt = now;
+    showToast('Controle remoto indisponível. Aguarde o cliente autorizar.');
+  };
+
+  const canSendPointer = () => {
+    if (!state.commandState.remoteActive) return false;
+    if (!hasActiveVideo()) return false;
+    if (!canSendControlCommand()) {
+      warnControlUnavailable();
+      return false;
+    }
+    return true;
+  };
+
+  const dragState = {
+    active: false,
+    dragging: false,
+    pointerId: null,
+    startClient: { x: 0, y: 0 },
+    startNormalized: { x: 0, y: 0 },
+  };
+
+  const resetDrag = () => {
+    dragState.active = false;
+    dragState.dragging = false;
+    dragState.pointerId = null;
+  };
+
+  videoEl.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (!canSendPointer()) return;
+    event.preventDefault();
+    videoEl.focus({ preventScroll: true });
+    dragState.active = true;
+    dragState.dragging = false;
+    dragState.pointerId = event.pointerId;
+    dragState.startClient = { x: event.clientX, y: event.clientY };
+    dragState.startNormalized = getNormalizedXY(videoEl, event);
+    try {
+      videoEl.setPointerCapture(event.pointerId);
+    } catch (_error) {
+      // ignore capture failures
+    }
+  });
+
+  videoEl.addEventListener('pointermove', (event) => {
+    if (!dragState.active || dragState.pointerId !== event.pointerId) return;
+    if (!canSendPointer()) return;
+    event.preventDefault();
+    const dx = event.clientX - dragState.startClient.x;
+    const dy = event.clientY - dragState.startClient.y;
+    const distance = Math.hypot(dx, dy);
+    const coords = getNormalizedXY(videoEl, event);
+    if (!dragState.dragging && distance > DRAG_THRESHOLD_PX) {
+      dragState.dragging = true;
+      sendCtrlCommand({ t: 'drag_start', x: dragState.startNormalized.x, y: dragState.startNormalized.y });
+    }
+    if (dragState.dragging) {
+      sendCtrlCommand({ t: 'drag_move', x: coords.x, y: coords.y });
+    }
+  });
+
+  const finishPointer = (event) => {
+    if (!dragState.active || dragState.pointerId !== event.pointerId) return;
+    if (!canSendPointer()) {
+      resetDrag();
+      return;
+    }
+    event.preventDefault();
+    const coords = getNormalizedXY(videoEl, event);
+    if (dragState.dragging) {
+      sendCtrlCommand({ t: 'drag_end', x: coords.x, y: coords.y });
+    } else {
+      sendCtrlCommand({ t: 'tap', x: dragState.startNormalized.x, y: dragState.startNormalized.y });
+    }
+    resetDrag();
+  };
+
+  videoEl.addEventListener('pointerup', finishPointer);
+  videoEl.addEventListener('pointercancel', finishPointer);
+
+  videoEl.addEventListener('keydown', (event) => {
+    if (!state.commandState.remoteActive) return;
+    if (!canSendControlCommand()) {
+      warnControlUnavailable();
+      return;
+    }
+
+    const { key } = event;
+    const isPrintable = key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (key === 'Escape' || key === 'BrowserBack') {
+      event.preventDefault();
+      sendCtrlCommand({ t: 'back' });
+      return;
+    }
+    if (isPrintable) {
+      event.preventDefault();
+      sendCtrlCommand({ t: 'text', text: key });
+      return;
+    }
+    const allowedKeys = new Set(['Enter', 'Backspace', 'Tab', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+    if (allowedKeys.has(key)) {
+      event.preventDefault();
+      sendCtrlCommand({ t: 'key', key });
+    }
+  });
 };
 
 const formatTime = (timestamp) => {
@@ -2917,6 +3137,7 @@ const bootstrap = async () => {
   bindSessionControls();
   bindControlMenu();
   bindViewControls();
+  bindRemoteControlEvents();
   initChat();
   bindClosureForm();
   bindQueueRetryButton();

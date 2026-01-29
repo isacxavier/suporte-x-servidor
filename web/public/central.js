@@ -666,7 +666,6 @@ function isSessionCurrent(sessionId) {
 function markSessionActive(sessionId) {
   if (!sessionId) return;
   setSessionState(SessionStates.ACTIVE, sessionId);
-  startSessionHeightSync();
 }
 
 function markSessionEnded(sessionId, reason = 'peer_ended') {
@@ -2037,7 +2036,6 @@ function resetDashboard({ sessionId = null, reason = 'peer_ended' } = {}) {
   renderSessions();
   renderChatForSession();
   updateMediaDisplay();
-  resetSessionPanelsLayout();
 
   if (dom.closureForm) {
     dom.closureForm.reset();
@@ -2790,74 +2788,31 @@ const initChat = () => {
   });
 };
 
-let sessionResizeObserver = null;
-let sessionResizeRafId = null;
-let sessionResizeHandler = null;
-
-const setPanelsHeight = (px) => {
-  if (!Number.isFinite(px)) return;
-  document.documentElement.style.setProperty('--session-panels-h', `${px}px`);
-};
-
-const resetPanelsHeightToDefault = () => {
-  document.documentElement.style.removeProperty('--session-panels-h');
-};
-
-const startSessionHeightSync = () => {
+const bindPanelsToSessionHeight = () => {
+  const triple = document.querySelector('.triple-panels');
   const sessionPanel = document.querySelector('.session-panel');
-  if (!sessionPanel) return;
-  stopSessionHeightSync();
+  if (!triple || !sessionPanel) return;
 
+  let rafId = null;
   const applyHeight = () => {
-    sessionResizeRafId = null;
+    rafId = null;
     const height = Math.ceil(sessionPanel.getBoundingClientRect().height);
-    if (height > 300) setPanelsHeight(height);
+    triple.style.setProperty('--session-panel-h', `${height}px`);
   };
 
-  sessionResizeObserver = trackObserver(
+  const observer = trackObserver(
     new ResizeObserver(() => {
-      if (sessionResizeRafId) cancelAnimationFrame(sessionResizeRafId);
-      sessionResizeRafId = requestAnimationFrame(applyHeight);
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(applyHeight);
     })
   );
-  sessionResizeObserver.observe(sessionPanel);
-
-  sessionResizeHandler = () => {
-    if (sessionResizeRafId) cancelAnimationFrame(sessionResizeRafId);
-    sessionResizeRafId = requestAnimationFrame(applyHeight);
-  };
-  window.addEventListener('resize', sessionResizeHandler);
+  observer.observe(sessionPanel);
 
   applyHeight();
-};
-
-const stopSessionHeightSync = () => {
-  if (sessionResizeObserver) {
-    sessionResizeObserver.disconnect();
-    sessionResizeObserver = null;
-  }
-  if (sessionResizeHandler) {
-    window.removeEventListener('resize', sessionResizeHandler);
-    sessionResizeHandler = null;
-  }
-  if (sessionResizeRafId) {
-    cancelAnimationFrame(sessionResizeRafId);
-    sessionResizeRafId = null;
-  }
-};
-
-const resetSessionPanelsLayout = () => {
-  stopSessionHeightSync();
-  resetPanelsHeightToDefault();
-  if (dom.sessionPlaceholder) {
-    dom.sessionPlaceholder.textContent = 'Aguardando seleção de sessão';
-    dom.sessionPlaceholder.removeAttribute('hidden');
-  }
-  if (dom.sessionVideo) {
-    dom.sessionVideo.setAttribute('hidden', 'hidden');
-    dom.sessionVideo.srcObject = null;
-  }
-  requestAnimationFrame(() => resetPanelsHeightToDefault());
+  window.addEventListener('resize', () => {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyHeight);
+  });
 };
 
 const bindClosureForm = () => {
@@ -2958,6 +2913,7 @@ const bootstrap = async () => {
   updateTechIdentity();
   setSessionState(SessionStates.IDLE, null);
   resetCommandState();
+  bindPanelsToSessionHeight();
   bindSessionControls();
   bindControlMenu();
   bindViewControls();
@@ -3187,7 +3143,6 @@ function cleanupSession({ rebindHandlers = false } = {}) {
   teardownPeerConnection();
   teardownLegacyShare();
   resetCommandState();
-  resetSessionPanelsLayout();
   setSessionState(SessionStates.IDLE, null);
   state.joinedSessionId = null;
   state.media.sessionId = null;

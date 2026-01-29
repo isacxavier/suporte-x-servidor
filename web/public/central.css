@@ -19,7 +19,6 @@
   --dashboard-padding: clamp(18px, 2.6vw, 36px);
   --panel-padding: clamp(14px, 1.8vw, 18px);
   --panel-gap: clamp(12px, 1.6vw, 18px);
-  --session-panels-h: clamp(520px, 62vh, 720px);
 }
 
 body[data-theme="light"] {
@@ -543,6 +542,7 @@ body {
    1) Linha com 3 painéis: todos com a mesma altura
    ========================================================= */
 .triple-panels {
+  --session-panel-h: auto;
   display: grid;
   grid-template-columns: 1fr 1.6fr 1fr;
   gap: var(--panel-gap);
@@ -567,9 +567,15 @@ body {
 }
 
 .device-panel,
-.session-panel,
 .chat-panel {
-  height: var(--session-panels-h);
+  height: var(--session-panel-h);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-panel {
+  height: auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1036,8 +1042,8 @@ body {
 }
 
 .session-panel {
-  height: var(--session-panels-h);
-  min-height: 0;
+  height: auto;
+  min-height: fit-content;
 }
 
 .session-panel .session-main {

@@ -362,6 +362,7 @@ const hideToast = () => {
 
 const CTRL_CHANNEL_LABEL = 'ctrl';
 const DRAG_THRESHOLD_PX = 8;
+const MIN_TAP_DURATION_MS = 100;
 
 const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
 
@@ -414,25 +415,37 @@ const getNormalizedXY = (videoEl, event) => {
   const rect = videoEl.getBoundingClientRect();
   const vw = videoEl.videoWidth || rect.width;
   const vh = videoEl.videoHeight || rect.height;
+  const style = window.getComputedStyle(videoEl);
+  const objectFit = style.objectFit || 'contain';
 
   const displayAspect = rect.width / rect.height;
   const videoAspect = vw / vh;
 
-  let drawW;
-  let drawH;
-  let offX;
-  let offY;
+  let drawW = rect.width;
+  let drawH = rect.height;
+  let offX = 0;
+  let offY = 0;
 
-  if (displayAspect > videoAspect) {
-    drawH = rect.height;
-    drawW = drawH * videoAspect;
-    offX = (rect.width - drawW) / 2;
-    offY = 0;
-  } else {
-    drawW = rect.width;
-    drawH = drawW / videoAspect;
-    offX = 0;
-    offY = (rect.height - drawH) / 2;
+  if (objectFit === 'contain' || objectFit === 'scale-down') {
+    if (displayAspect > videoAspect) {
+      drawH = rect.height;
+      drawW = drawH * videoAspect;
+      offX = (rect.width - drawW) / 2;
+    } else {
+      drawW = rect.width;
+      drawH = drawW / videoAspect;
+      offY = (rect.height - drawH) / 2;
+    }
+  } else if (objectFit === 'cover') {
+    if (displayAspect > videoAspect) {
+      drawW = rect.width;
+      drawH = drawW / videoAspect;
+      offY = (rect.height - drawH) / 2;
+    } else {
+      drawH = rect.height;
+      drawW = drawH * videoAspect;
+      offX = (rect.width - drawW) / 2;
+    }
   }
 
   const x = (event.clientX - rect.left - offX) / drawW;
@@ -2369,12 +2382,14 @@ const bindRemoteControlEvents = () => {
     pointerId: null,
     startClient: { x: 0, y: 0 },
     startNormalized: { x: 0, y: 0 },
+    startTime: 0,
   };
 
   const resetDrag = () => {
     dragState.active = false;
     dragState.dragging = false;
     dragState.pointerId = null;
+    dragState.startTime = 0;
   };
 
   videoEl.addEventListener('pointerdown', (event) => {
@@ -2387,6 +2402,7 @@ const bindRemoteControlEvents = () => {
     dragState.pointerId = event.pointerId;
     dragState.startClient = { x: event.clientX, y: event.clientY };
     dragState.startNormalized = getNormalizedXY(videoEl, event);
+    dragState.startTime = performance.now();
     try {
       videoEl.setPointerCapture(event.pointerId);
     } catch (_error) {
@@ -2422,7 +2438,14 @@ const bindRemoteControlEvents = () => {
     if (dragState.dragging) {
       sendCtrlCommand({ t: 'drag_end', x: coords.x, y: coords.y });
     } else {
-      sendCtrlCommand({ t: 'tap', x: dragState.startNormalized.x, y: dragState.startNormalized.y });
+      const elapsedMs = Math.max(0, performance.now() - dragState.startTime);
+      const durationMs = Math.max(MIN_TAP_DURATION_MS, Math.round(elapsedMs));
+      sendCtrlCommand({
+        t: 'tap',
+        x: dragState.startNormalized.x,
+        y: dragState.startNormalized.y,
+        durationMs,
+      });
     }
     resetDrag();
   };

@@ -311,6 +311,7 @@ const dom = {
   controlMenuToggle: document.getElementById('controlMenuToggle'),
   controlMenuPanel: document.getElementById('controlMenuPanel'),
   controlMenuBackdrop: document.getElementById('controlMenuBackdrop'),
+  remoteTextInput: document.getElementById('remoteTextInput'),
   webSharePanel: document.getElementById('webSharePanel'),
   webShareRoom: document.getElementById('webShareRoom'),
   webShareConnect: document.getElementById('webShareConnect'),
@@ -361,10 +362,8 @@ const hideToast = () => {
 };
 
 const CTRL_CHANNEL_LABEL = 'ctrl';
-const DRAG_THRESHOLD_PX = 8;
-const MIN_TAP_DURATION_MS = 100;
-const LONG_PRESS_DELAY_MS = 450;
-const SWIPE_MAX_DURATION_MS = 350;
+const POINTER_MOVE_THROTTLE_MS = 33;
+const TEXT_SEND_DEBOUNCE_MS = 80;
 
 const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
 
@@ -2367,55 +2366,91 @@ const bindRemoteControlEvents = () => {
     return true;
   };
 
-  const dragState = {
+  const pointerState = {
     active: false,
-    dragging: false,
-    longPressSent: false,
     pointerId: null,
-    startClient: { x: 0, y: 0 },
-    startNormalized: { x: 0, y: 0 },
-    startTime: 0,
-    longPressTimer: null,
+    lastMoveAt: 0,
+    pendingMove: null,
+    moveTimer: null,
   };
 
-  const resetDrag = () => {
-    dragState.active = false;
-    dragState.dragging = false;
-    dragState.longPressSent = false;
-    dragState.pointerId = null;
-    dragState.startTime = 0;
-    if (dragState.longPressTimer) {
-      clearTimeout(dragState.longPressTimer);
-      dragState.longPressTimer = null;
+  const textState = {
+    buffer: '',
+    debounceTimer: null,
+  };
+
+  const resetPointer = () => {
+    pointerState.active = false;
+    pointerState.pointerId = null;
+    pointerState.lastMoveAt = 0;
+    pointerState.pendingMove = null;
+    if (pointerState.moveTimer) {
+      clearTimeout(pointerState.moveTimer);
+      pointerState.moveTimer = null;
     }
+  };
+
+  const focusRemoteInput = () => {
+    if (dom.remoteTextInput) {
+      dom.remoteTextInput.focus({ preventScroll: true });
+    } else {
+      videoEl.focus({ preventScroll: true });
+    }
+  };
+
+  const scheduleTextSend = () => {
+    if (textState.debounceTimer) {
+      clearTimeout(textState.debounceTimer);
+    }
+    textState.debounceTimer = setTimeout(() => {
+      if (!state.commandState.remoteActive) return;
+      if (!canSendControlCommand()) {
+        warnControlUnavailable();
+        return;
+      }
+      sendCtrlCommand({ t: 'set_text', text: textState.buffer, append: false });
+    }, TEXT_SEND_DEBOUNCE_MS);
+  };
+
+  const updateTextBuffer = (value) => {
+    textState.buffer = value;
+    if (dom.remoteTextInput && dom.remoteTextInput.value !== value) {
+      dom.remoteTextInput.value = value;
+    }
+    scheduleTextSend();
+  };
+
+  const flushPointerMove = () => {
+    pointerState.moveTimer = null;
+    if (!pointerState.active || !pointerState.pendingMove) return;
+    if (!canSendPointer()) {
+      resetPointer();
+      return;
+    }
+    sendCtrlCommand({
+      t: 'pointer_move',
+      x: pointerState.pendingMove.x,
+      y: pointerState.pendingMove.y,
+    });
+    pointerState.lastMoveAt = performance.now();
+    pointerState.pendingMove = null;
   };
 
   videoEl.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     if (!canSendPointer()) return;
     event.preventDefault();
-    videoEl.focus({ preventScroll: true });
-    dragState.active = true;
-    dragState.dragging = false;
-    dragState.pointerId = event.pointerId;
-    dragState.startClient = { x: event.clientX, y: event.clientY };
-    dragState.startNormalized = getNormalizedXY(videoEl, event);
-    dragState.startTime = performance.now();
-    dragState.longPressSent = false;
-    if (dragState.longPressTimer) {
-      clearTimeout(dragState.longPressTimer);
-    }
-    dragState.longPressTimer = setTimeout(() => {
-      if (!dragState.active || dragState.dragging) return;
-      dragState.longPressSent = true;
-      const durationMs = Math.max(LONG_PRESS_DELAY_MS, Math.round(performance.now() - dragState.startTime));
-      sendCtrlCommand({
-        t: 'longpress',
-        x: dragState.startNormalized.x,
-        y: dragState.startNormalized.y,
-        durationMs,
-      });
-    }, LONG_PRESS_DELAY_MS);
+    focusRemoteInput();
+    pointerState.active = true;
+    pointerState.pointerId = event.pointerId;
+    pointerState.lastMoveAt = 0;
+    pointerState.pendingMove = null;
+    const coords = getNormalizedXY(videoEl, event);
+    sendCtrlCommand({
+      t: 'pointer_down',
+      x: coords.x,
+      y: coords.y,
+    });
     try {
       videoEl.setPointerCapture(event.pointerId);
     } catch (_error) {
@@ -2424,85 +2459,115 @@ const bindRemoteControlEvents = () => {
   });
 
   videoEl.addEventListener('pointermove', (event) => {
-    if (!dragState.active || dragState.pointerId !== event.pointerId) return;
+    if (!pointerState.active || pointerState.pointerId !== event.pointerId) return;
     if (!canSendPointer()) return;
     event.preventDefault();
-    const dx = event.clientX - dragState.startClient.x;
-    const dy = event.clientY - dragState.startClient.y;
-    const distance = Math.hypot(dx, dy);
-    if (!dragState.dragging && distance > DRAG_THRESHOLD_PX) {
-      dragState.dragging = true;
-      if (dragState.longPressTimer) {
-        clearTimeout(dragState.longPressTimer);
-        dragState.longPressTimer = null;
+    const coords = getNormalizedXY(videoEl, event);
+    const now = performance.now();
+    const elapsed = now - pointerState.lastMoveAt;
+    if (elapsed >= POINTER_MOVE_THROTTLE_MS) {
+      if (pointerState.moveTimer) {
+        clearTimeout(pointerState.moveTimer);
+        pointerState.moveTimer = null;
+      }
+      pointerState.pendingMove = null;
+      sendCtrlCommand({
+        t: 'pointer_move',
+        x: coords.x,
+        y: coords.y,
+      });
+      pointerState.lastMoveAt = now;
+    } else {
+      pointerState.pendingMove = coords;
+      if (!pointerState.moveTimer) {
+        pointerState.moveTimer = setTimeout(flushPointerMove, POINTER_MOVE_THROTTLE_MS - elapsed);
       }
     }
   });
 
   const finishPointer = (event) => {
-    if (!dragState.active || dragState.pointerId !== event.pointerId) return;
+    if (!pointerState.active || pointerState.pointerId !== event.pointerId) return;
     if (!canSendPointer()) {
-      resetDrag();
+      resetPointer();
       return;
     }
     event.preventDefault();
     const coords = getNormalizedXY(videoEl, event);
-    if (dragState.dragging) {
-      const elapsedMs = Math.max(0, performance.now() - dragState.startTime);
-      const durationMs = Math.max(MIN_TAP_DURATION_MS, Math.round(elapsedMs));
-      const commandType = durationMs <= SWIPE_MAX_DURATION_MS ? 'swipe' : 'drag';
-      sendCtrlCommand({
-        t: commandType,
-        x1: dragState.startNormalized.x,
-        y1: dragState.startNormalized.y,
-        x2: coords.x,
-        y2: coords.y,
-        durationMs,
-      });
-    } else if (!dragState.longPressSent) {
-      const elapsedMs = Math.max(0, performance.now() - dragState.startTime);
-      const durationMs = Math.max(MIN_TAP_DURATION_MS, Math.round(elapsedMs));
-      sendCtrlCommand({
-        t: 'tap',
-        x: dragState.startNormalized.x,
-        y: dragState.startNormalized.y,
-        durationMs,
-      });
-    } else {
-      if (dragState.longPressTimer) {
-        clearTimeout(dragState.longPressTimer);
-        dragState.longPressTimer = null;
-      }
+    if (pointerState.moveTimer) {
+      clearTimeout(pointerState.moveTimer);
+      pointerState.moveTimer = null;
     }
-    resetDrag();
+    pointerState.pendingMove = null;
+    sendCtrlCommand({
+      t: 'pointer_up',
+      x: coords.x,
+      y: coords.y,
+    });
+    resetPointer();
   };
 
   videoEl.addEventListener('pointerup', finishPointer);
   videoEl.addEventListener('pointercancel', finishPointer);
 
+  const handleSpecialKey = (event) => {
+    if (!state.commandState.remoteActive) return false;
+    if (!canSendControlCommand()) {
+      warnControlUnavailable();
+      event.preventDefault();
+      return true;
+    }
+    const { key } = event;
+    if (key === 'Escape' || key === 'BrowserBack') {
+      event.preventDefault();
+      sendCtrlCommand({ t: 'back' });
+      return true;
+    }
+    const navigationKeys = new Set(['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+    if (navigationKeys.has(key)) {
+      event.preventDefault();
+      sendCtrlCommand({ t: 'key', key });
+      return true;
+    }
+    return false;
+  };
+
+  if (dom.remoteTextInput) {
+    dom.remoteTextInput.addEventListener('input', () => {
+      if (!state.commandState.remoteActive) return;
+      if (!canSendControlCommand()) {
+        warnControlUnavailable();
+        return;
+      }
+      updateTextBuffer(dom.remoteTextInput.value);
+    });
+    dom.remoteTextInput.addEventListener('keydown', (event) => {
+      handleSpecialKey(event);
+    });
+  }
+
   videoEl.addEventListener('keydown', (event) => {
+    const handled = handleSpecialKey(event);
+    if (handled) return;
     if (!state.commandState.remoteActive) return;
     if (!canSendControlCommand()) {
       warnControlUnavailable();
       return;
     }
-
     const { key } = event;
     const isPrintable = key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
-    if (key === 'Escape' || key === 'BrowserBack') {
-      event.preventDefault();
-      sendCtrlCommand({ t: 'back' });
-      return;
-    }
     if (isPrintable) {
       event.preventDefault();
-      sendCtrlCommand({ t: 'text', text: key });
+      updateTextBuffer(`${textState.buffer}${key}`);
       return;
     }
-    const allowedKeys = new Set(['Enter', 'Backspace', 'Tab', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
-    if (allowedKeys.has(key)) {
+    if (key === 'Enter') {
       event.preventDefault();
-      sendCtrlCommand({ t: 'key', key });
+      updateTextBuffer(`${textState.buffer}\n`);
+      return;
+    }
+    if (key === 'Backspace' || key === 'Delete') {
+      event.preventDefault();
+      updateTextBuffer(textState.buffer.slice(0, -1));
     }
   });
 };

@@ -413,43 +413,32 @@ const sendCtrlCommand = (command) => {
 
 const getNormalizedXY = (videoEl, event) => {
   const rect = videoEl.getBoundingClientRect();
-  const vw = videoEl.videoWidth || rect.width;
-  const vh = videoEl.videoHeight || rect.height;
+  const frameW = videoEl.videoWidth || rect.width;
+  const frameH = videoEl.videoHeight || rect.height;
   const style = window.getComputedStyle(videoEl);
   const objectFit = style.objectFit || 'contain';
-
-  const displayAspect = rect.width / rect.height;
-  const videoAspect = vw / vh;
 
   let drawW = rect.width;
   let drawH = rect.height;
   let offX = 0;
   let offY = 0;
 
-  if (objectFit === 'contain' || objectFit === 'scale-down') {
-    if (displayAspect > videoAspect) {
-      drawH = rect.height;
-      drawW = drawH * videoAspect;
-      offX = (rect.width - drawW) / 2;
-    } else {
-      drawW = rect.width;
-      drawH = drawW / videoAspect;
-      offY = (rect.height - drawH) / 2;
-    }
-  } else if (objectFit === 'cover') {
-    if (displayAspect > videoAspect) {
-      drawW = rect.width;
-      drawH = drawW / videoAspect;
-      offY = (rect.height - drawH) / 2;
-    } else {
-      drawH = rect.height;
-      drawW = drawH * videoAspect;
-      offX = (rect.width - drawW) / 2;
-    }
+  if (frameW > 0 && frameH > 0) {
+    const scaleContain = Math.min(rect.width / frameW, rect.height / frameH);
+    const scaleCover = Math.max(rect.width / frameW, rect.height / frameH);
+    const scale = objectFit === 'cover' ? scaleCover : scaleContain;
+
+    drawW = frameW * scale;
+    drawH = frameH * scale;
+    offX = (rect.width - drawW) / 2;
+    offY = (rect.height - drawH) / 2;
   }
 
-  const x = (event.clientX - rect.left - offX) / drawW;
-  const y = (event.clientY - rect.top - offY) / drawH;
+  const contentLeft = rect.left + offX;
+  const contentTop = rect.top + offY;
+
+  const x = (event.clientX - contentLeft) / drawW;
+  const y = (event.clientY - contentTop) / drawH;
 
   return {
     x: Math.min(1, Math.max(0, x)),

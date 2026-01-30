@@ -363,6 +363,8 @@ const hideToast = () => {
 const CTRL_CHANNEL_LABEL = 'ctrl';
 const DRAG_THRESHOLD_PX = 8;
 const MIN_TAP_DURATION_MS = 100;
+const LONG_PRESS_DELAY_MS = 450;
+const SWIPE_MAX_DURATION_MS = 350;
 
 const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
 
@@ -2368,17 +2370,24 @@ const bindRemoteControlEvents = () => {
   const dragState = {
     active: false,
     dragging: false,
+    longPressSent: false,
     pointerId: null,
     startClient: { x: 0, y: 0 },
     startNormalized: { x: 0, y: 0 },
     startTime: 0,
+    longPressTimer: null,
   };
 
   const resetDrag = () => {
     dragState.active = false;
     dragState.dragging = false;
+    dragState.longPressSent = false;
     dragState.pointerId = null;
     dragState.startTime = 0;
+    if (dragState.longPressTimer) {
+      clearTimeout(dragState.longPressTimer);
+      dragState.longPressTimer = null;
+    }
   };
 
   videoEl.addEventListener('pointerdown', (event) => {
@@ -2392,6 +2401,21 @@ const bindRemoteControlEvents = () => {
     dragState.startClient = { x: event.clientX, y: event.clientY };
     dragState.startNormalized = getNormalizedXY(videoEl, event);
     dragState.startTime = performance.now();
+    dragState.longPressSent = false;
+    if (dragState.longPressTimer) {
+      clearTimeout(dragState.longPressTimer);
+    }
+    dragState.longPressTimer = setTimeout(() => {
+      if (!dragState.active || dragState.dragging) return;
+      dragState.longPressSent = true;
+      const durationMs = Math.max(LONG_PRESS_DELAY_MS, Math.round(performance.now() - dragState.startTime));
+      sendCtrlCommand({
+        t: 'longpress',
+        x: dragState.startNormalized.x,
+        y: dragState.startNormalized.y,
+        durationMs,
+      });
+    }, LONG_PRESS_DELAY_MS);
     try {
       videoEl.setPointerCapture(event.pointerId);
     } catch (_error) {
@@ -2406,13 +2430,12 @@ const bindRemoteControlEvents = () => {
     const dx = event.clientX - dragState.startClient.x;
     const dy = event.clientY - dragState.startClient.y;
     const distance = Math.hypot(dx, dy);
-    const coords = getNormalizedXY(videoEl, event);
     if (!dragState.dragging && distance > DRAG_THRESHOLD_PX) {
       dragState.dragging = true;
-      sendCtrlCommand({ t: 'drag_start', x: dragState.startNormalized.x, y: dragState.startNormalized.y });
-    }
-    if (dragState.dragging) {
-      sendCtrlCommand({ t: 'drag_move', x: coords.x, y: coords.y });
+      if (dragState.longPressTimer) {
+        clearTimeout(dragState.longPressTimer);
+        dragState.longPressTimer = null;
+      }
     }
   });
 
@@ -2425,8 +2448,18 @@ const bindRemoteControlEvents = () => {
     event.preventDefault();
     const coords = getNormalizedXY(videoEl, event);
     if (dragState.dragging) {
-      sendCtrlCommand({ t: 'drag_end', x: coords.x, y: coords.y });
-    } else {
+      const elapsedMs = Math.max(0, performance.now() - dragState.startTime);
+      const durationMs = Math.max(MIN_TAP_DURATION_MS, Math.round(elapsedMs));
+      const commandType = durationMs <= SWIPE_MAX_DURATION_MS ? 'swipe' : 'drag';
+      sendCtrlCommand({
+        t: commandType,
+        x1: dragState.startNormalized.x,
+        y1: dragState.startNormalized.y,
+        x2: coords.x,
+        y2: coords.y,
+        durationMs,
+      });
+    } else if (!dragState.longPressSent) {
       const elapsedMs = Math.max(0, performance.now() - dragState.startTime);
       const durationMs = Math.max(MIN_TAP_DURATION_MS, Math.round(elapsedMs));
       sendCtrlCommand({
@@ -2435,6 +2468,11 @@ const bindRemoteControlEvents = () => {
         y: dragState.startNormalized.y,
         durationMs,
       });
+    } else {
+      if (dragState.longPressTimer) {
+        clearTimeout(dragState.longPressTimer);
+        dragState.longPressTimer = null;
+      }
     }
     resetDrag();
   };

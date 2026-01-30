@@ -2185,6 +2185,7 @@ function handleCommandEffects(command, { local = false } = {}) {
     case 'remote_enable':
       state.commandState.remoteActive = true;
       if (dom.controlRemote) dom.controlRemote.textContent = 'Revogar acesso remoto';
+      dom.sessionVideo?.focus({ preventScroll: true });
       break;
     case 'remote_disable':
       state.commandState.remoteActive = false;
@@ -2398,6 +2399,43 @@ const bindRemoteControlEvents = () => {
     }
   };
 
+  const focusRemoteVideo = () => {
+    videoEl.focus({ preventScroll: true });
+  };
+
+  const isEditableTarget = (target) => {
+    if (!target || !(target instanceof HTMLElement)) return false;
+    const tag = target.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+  };
+
+  const shouldBlockKey = (event) => {
+    const blockedKeys = new Set([
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      ' ',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+      'Backspace',
+      'Enter',
+    ]);
+    return blockedKeys.has(event.key);
+  };
+
+  const handleRemoteKeyGuard = (event) => {
+    if (!state.commandState.remoteActive) return;
+    if (isEditableTarget(event.target)) return;
+    if (!shouldBlockKey(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  document.addEventListener('keydown', handleRemoteKeyGuard, true);
+
   const scheduleTextSend = () => {
     if (textState.debounceTimer) {
       clearTimeout(textState.debounceTimer);
@@ -2451,6 +2489,7 @@ const bindRemoteControlEvents = () => {
       x: coords.x,
       y: coords.y,
     });
+    focusRemoteVideo();
     try {
       videoEl.setPointerCapture(event.pointerId);
     } catch (_error) {
@@ -2525,7 +2564,7 @@ const bindRemoteControlEvents = () => {
     const navigationKeys = new Set(['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
     if (navigationKeys.has(key)) {
       event.preventDefault();
-      sendCtrlCommand({ t: 'key', key });
+      sendCtrlCommand({ t: 'key', key, shift: event.shiftKey });
       return true;
     }
     return false;
@@ -2562,7 +2601,12 @@ const bindRemoteControlEvents = () => {
     }
     if (key === 'Enter') {
       event.preventDefault();
-      updateTextBuffer(`${textState.buffer}\n`);
+      if (event.shiftKey) {
+        sendCtrlCommand({ t: 'key', key: 'Enter', shift: true });
+        updateTextBuffer(`${textState.buffer}\n`);
+      } else {
+        sendCtrlCommand({ t: 'key', key: 'Enter', shift: false });
+      }
       return;
     }
     if (key === 'Backspace' || key === 'Delete') {
@@ -2799,6 +2843,9 @@ const renderSessions = () => {
     if (telemetry && typeof telemetry.remoteActive === 'boolean' && dom.controlRemote) {
       state.commandState.remoteActive = telemetry.remoteActive;
       dom.controlRemote.textContent = telemetry.remoteActive ? 'Revogar acesso remoto' : 'Solicitar acesso remoto';
+      if (telemetry.remoteActive) {
+        dom.sessionVideo?.focus({ preventScroll: true });
+      }
     }
     if (telemetry && typeof telemetry.callActive === 'boolean' && dom.controlQuality) {
       state.commandState.callActive = telemetry.callActive;

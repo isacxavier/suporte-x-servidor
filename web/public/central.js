@@ -379,6 +379,7 @@ const POINTER_MOVE_THROTTLE_MS = 33;
 const TEXT_SEND_DEBOUNCE_MS = 80;
 const WHITEBOARD_MAX_POINTS_PER_FRAME = 400;
 const WHITEBOARD_MAX_QUEUE_SIZE = 5000;
+const WHITEBOARD_COALESCE_THRESHOLD = 1500;
 const WHITEBOARD_METRICS_INTERVAL_MS = 2000;
 const WHITEBOARD_COMMAND_TYPES = new Set(['whiteboard', 'whiteboard_event', 'draw', 'drawing', 'wb']);
 const WHITEBOARD_DEBUG = (() => {
@@ -523,12 +524,36 @@ const initWhiteboardMetrics = () => ({
   totalRenderMs: 0,
   totalE2eMs: 0,
   latencySamples: 0,
+  networkSamples: [],
+  renderSamples: [],
+  e2eSamples: [],
+  maxNetworkMs: 0,
+  maxRenderMs: 0,
+  maxE2eMs: 0,
+  lastReceivedAt: null,
+  gapSamples: 0,
+  gapSum: 0,
+  gapSumSquares: 0,
+  maxGapMs: 0,
+  maxQueueLen: 0,
+  maxBufferedAmount: 0,
 });
 
 const resetWhiteboardMetrics = () => {
   state.whiteboard.metrics = initWhiteboardMetrics();
   state.whiteboard.lastMetricsAt = performance.now();
   state.whiteboard.droppedPoints = 0;
+};
+
+const getWhiteboardPercentiles = (samples, percentiles = [50, 95, 99]) => {
+  if (!samples.length) return {};
+  const sorted = [...samples].sort((a, b) => a - b);
+  const result = {};
+  percentiles.forEach((pct) => {
+    const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((pct / 100) * (sorted.length - 1))));
+    result[pct] = sorted[index];
+  });
+  return result;
 };
 
 const reportWhiteboardMetrics = ({ force = false } = {}) => {
@@ -543,6 +568,21 @@ const reportWhiteboardMetrics = ({ force = false } = {}) => {
   const eventsPerSec = metrics.receivedEvents ? (metrics.receivedEvents / elapsed) * 1000 : 0;
   const pointsPerSec = metrics.receivedPoints ? (metrics.receivedPoints / elapsed) * 1000 : 0;
   const bytesPerSec = metrics.receivedBytes ? (metrics.receivedBytes / elapsed) * 1000 : 0;
+  const gapAvg = metrics.gapSamples ? metrics.gapSum / metrics.gapSamples : 0;
+  const gapVariance = metrics.gapSamples
+    ? metrics.gapSumSquares / metrics.gapSamples - gapAvg * gapAvg
+    : 0;
+  const gapJitter = Math.sqrt(Math.max(0, gapVariance));
+  const networkPercentiles = getWhiteboardPercentiles(metrics.networkSamples);
+  const renderPercentiles = getWhiteboardPercentiles(metrics.renderSamples);
+  const e2ePercentiles = getWhiteboardPercentiles(metrics.e2eSamples);
+  const bufferedAmount =
+    state.media.ctrlChannel && typeof state.media.ctrlChannel.bufferedAmount === 'number'
+      ? state.media.ctrlChannel.bufferedAmount
+      : null;
+  if (typeof bufferedAmount === 'number') {
+    metrics.maxBufferedAmount = Math.max(metrics.maxBufferedAmount, bufferedAmount);
+  }
 
   console.info('[WB][metrics]', {
     windowMs: Math.round(elapsed),
@@ -556,6 +596,25 @@ const reportWhiteboardMetrics = ({ force = false } = {}) => {
     avgNetworkMs: Math.round(avgNetwork),
     avgRenderMs: Math.round(avgRender),
     avgE2eMs: Math.round(avgE2e),
+    p50NetworkMs: Math.round(networkPercentiles[50] || 0),
+    p95NetworkMs: Math.round(networkPercentiles[95] || 0),
+    p99NetworkMs: Math.round(networkPercentiles[99] || 0),
+    maxNetworkMs: Math.round(metrics.maxNetworkMs || 0),
+    p50RenderMs: Math.round(renderPercentiles[50] || 0),
+    p95RenderMs: Math.round(renderPercentiles[95] || 0),
+    p99RenderMs: Math.round(renderPercentiles[99] || 0),
+    maxRenderMs: Math.round(metrics.maxRenderMs || 0),
+    p50E2eMs: Math.round(e2ePercentiles[50] || 0),
+    p95E2eMs: Math.round(e2ePercentiles[95] || 0),
+    p99E2eMs: Math.round(e2ePercentiles[99] || 0),
+    maxE2eMs: Math.round(metrics.maxE2eMs || 0),
+    avgGapMs: Math.round(gapAvg),
+    maxGapMs: Math.round(metrics.maxGapMs || 0),
+    jitterGapMs: Math.round(gapJitter),
+    queueLen: state.whiteboard.queue.length,
+    maxQueueLen: metrics.maxQueueLen,
+    bufferedAmount,
+    maxBufferedAmount: metrics.maxBufferedAmount,
   });
 
   resetWhiteboardMetrics();
@@ -668,13 +727,56 @@ const drawWhiteboardPoint = (point, mapping, meta = {}) => {
     const t1 = meta.receivedAt ?? performance.now();
     const t2 = performance.now();
     const t0 = meta.originTs;
+    const renderMs = t2 - t1;
     state.whiteboard.metrics.drawnPoints += 1;
-    state.whiteboard.metrics.totalRenderMs += t2 - t1;
+    state.whiteboard.metrics.totalRenderMs += renderMs;
+    state.whiteboard.metrics.renderSamples.push(renderMs);
+    state.whiteboard.metrics.maxRenderMs = Math.max(state.whiteboard.metrics.maxRenderMs, renderMs);
     if (typeof t0 === 'number') {
-      state.whiteboard.metrics.totalNetworkMs += t1 - t0;
-      state.whiteboard.metrics.totalE2eMs += t2 - t0;
+      const networkMs = t1 - t0;
+      const e2eMs = t2 - t0;
+      state.whiteboard.metrics.totalNetworkMs += networkMs;
+      state.whiteboard.metrics.totalE2eMs += e2eMs;
+      state.whiteboard.metrics.networkSamples.push(networkMs);
+      state.whiteboard.metrics.e2eSamples.push(e2eMs);
+      state.whiteboard.metrics.maxNetworkMs = Math.max(state.whiteboard.metrics.maxNetworkMs, networkMs);
+      state.whiteboard.metrics.maxE2eMs = Math.max(state.whiteboard.metrics.maxE2eMs, e2eMs);
       state.whiteboard.metrics.latencySamples += 1;
     }
+  }
+};
+
+const getWhiteboardPointAction = (point = {}) => point.action || point.phase || 'move';
+
+const getWhiteboardStrokeId = (point = {}) => point.strokeId || point.stroke || 'default';
+
+const coalesceWhiteboardQueue = () => {
+  if (state.whiteboard.queue.length < WHITEBOARD_COALESCE_THRESHOLD) return;
+  const seenMoves = new Set();
+  const pruned = [];
+  let dropped = 0;
+
+  for (let i = state.whiteboard.queue.length - 1; i >= 0; i -= 1) {
+    const entry = state.whiteboard.queue[i];
+    const action = getWhiteboardPointAction(entry.point);
+    if (action === 'move') {
+      const strokeId = getWhiteboardStrokeId(entry.point);
+      const key = String(strokeId);
+      if (seenMoves.has(key)) {
+        dropped += 1;
+        continue;
+      }
+      seenMoves.add(key);
+    }
+    pruned.push(entry);
+  }
+
+  if (!dropped) return;
+  pruned.reverse();
+  state.whiteboard.queue = pruned;
+  state.whiteboard.droppedPoints += dropped;
+  if (WHITEBOARD_DEBUG && state.whiteboard.metrics) {
+    state.whiteboard.metrics.droppedPoints += dropped;
   }
 };
 
@@ -687,6 +789,14 @@ const enqueueWhiteboardPoints = (points, meta = {}) => {
     state.whiteboard.metrics.receivedEvents += 1;
     state.whiteboard.metrics.receivedPoints += points.length;
     state.whiteboard.metrics.receivedBytes += byteSize;
+    if (state.whiteboard.metrics.lastReceivedAt != null) {
+      const gap = receivedAt - state.whiteboard.metrics.lastReceivedAt;
+      state.whiteboard.metrics.gapSamples += 1;
+      state.whiteboard.metrics.gapSum += gap;
+      state.whiteboard.metrics.gapSumSquares += gap * gap;
+      state.whiteboard.metrics.maxGapMs = Math.max(state.whiteboard.metrics.maxGapMs, gap);
+    }
+    state.whiteboard.metrics.lastReceivedAt = receivedAt;
   }
 
   for (const point of points) {
@@ -704,6 +814,14 @@ const enqueueWhiteboardPoints = (points, meta = {}) => {
     console.warn('[WB] Fila estourada, descartando pontos antigos', overflow);
   }
 
+  if (WHITEBOARD_DEBUG && state.whiteboard.metrics) {
+    state.whiteboard.metrics.maxQueueLen = Math.max(
+      state.whiteboard.metrics.maxQueueLen,
+      state.whiteboard.queue.length,
+    );
+  }
+
+  coalesceWhiteboardQueue();
   scheduleWhiteboardRender();
 };
 

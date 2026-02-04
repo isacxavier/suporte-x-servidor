@@ -2429,6 +2429,7 @@ const bindRemoteControlEvents = () => {
   const handleRemoteKeyGuard = (event) => {
     if (!state.commandState.remoteActive) return;
     if (isEditableTarget(event.target)) return;
+    if (event.target === videoEl || event.target === dom.remoteTextInput) return;
     if (!shouldBlockKey(event)) return;
     event.preventDefault();
     event.stopPropagation();

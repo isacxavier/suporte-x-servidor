@@ -66,6 +66,8 @@ const state = {
     canvas: null,
     ctx: null,
     queue: [],
+    buffer: [],
+    bufferTimer: null,
     strokes: new Map(),
     rafId: null,
     resizeRafId: null,
@@ -377,6 +379,7 @@ const hideToast = () => {
 const CTRL_CHANNEL_LABEL = 'ctrl';
 const POINTER_MOVE_THROTTLE_MS = 33;
 const TEXT_SEND_DEBOUNCE_MS = 80;
+const WHITEBOARD_BATCH_INTERVAL_MS = 16;
 const WHITEBOARD_MAX_POINTS_PER_FRAME = 400;
 const WHITEBOARD_MAX_QUEUE_SIZE = 5000;
 const WHITEBOARD_COALESCE_THRESHOLD = 1500;
@@ -825,6 +828,23 @@ const enqueueWhiteboardPoints = (points, meta = {}) => {
   scheduleWhiteboardRender();
 };
 
+const flushWhiteboardBuffer = () => {
+  if (state.whiteboard.bufferTimer) {
+    clearTimeout(state.whiteboard.bufferTimer);
+    state.whiteboard.bufferTimer = null;
+  }
+  if (!state.whiteboard.buffer.length) return;
+  const batches = state.whiteboard.buffer.splice(0, state.whiteboard.buffer.length);
+  batches.forEach((batch) => {
+    enqueueWhiteboardPoints(batch.points, batch.meta);
+  });
+};
+
+const scheduleWhiteboardBufferFlush = () => {
+  if (state.whiteboard.bufferTimer) return;
+  state.whiteboard.bufferTimer = setTimeout(flushWhiteboardBuffer, WHITEBOARD_BATCH_INTERVAL_MS);
+};
+
 const processWhiteboardQueue = () => {
   state.whiteboard.rafId = null;
   if (!state.whiteboard.queue.length || !state.whiteboard.ctx || !dom.sessionVideo) return;
@@ -872,7 +892,8 @@ const ingestWhiteboardPayload = (payload = {}) => {
     ...point,
     originTs: normalizeOriginTimestamp(point.originTs ?? point.t0 ?? baseOrigin),
   }));
-  enqueueWhiteboardPoints(points, { receivedAt, originTs: baseOrigin, byteSize });
+  state.whiteboard.buffer.push({ points, meta: { receivedAt, originTs: baseOrigin, byteSize } });
+  scheduleWhiteboardBufferFlush();
 };
 
 function handleCtrlChannelMessage(event) {
@@ -1154,7 +1175,8 @@ const pickSessionQueryConstraint = (tech) => {
 const SOCKET_URL = window.location.origin;
 const socket = window.io
   ? window.io(SOCKET_URL, {
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
+      upgrade: true,
       withCredentials: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -1164,6 +1186,7 @@ const socket = window.io
       timeout: 20000,
     })
   : null;
+let socketUpgradeLogsRegistered = false;
 
 const CHAT_RENDER_LIMIT = 100;
 const TIMELINE_RENDER_LIMIT = 80;
@@ -3782,10 +3805,24 @@ const bootstrap = async () => {
   await Promise.all([loadSessions(), loadMetrics()]);
 };
 
+function registerSocketUpgradeLogs() {
+  if (socketUpgradeLogsRegistered) return;
+  const engine = socket?.io?.engine;
+  if (!engine) return;
+  socketUpgradeLogsRegistered = true;
+  engine.on('upgrade', (transport) => {
+    console.log('[socket] upgraded to', transport?.name || 'desconhecido');
+  });
+  engine.on('upgradeError', (error) => {
+    console.warn('[socket] upgradeError', error);
+  });
+}
+
 function handleSocketConnect() {
   if (socket?.id) {
     const transport = socket.io?.engine?.transport?.name || 'desconhecido';
-    console.log('[socket] connected', socket.id, transport);
+    console.log('[socket] connected', socket.id, 'via', transport);
+    registerSocketUpgradeLogs();
   }
   addChatMessage({ author: 'Sistema', text: 'Conectado ao servidor de sinalização.', kind: 'system' });
   state.joinedSessionId = null;
@@ -3999,6 +4036,11 @@ function cleanupSession({ rebindHandlers = false } = {}) {
   teardownLegacyShare();
   resetCommandState();
   state.whiteboard.queue.length = 0;
+  state.whiteboard.buffer.length = 0;
+  if (state.whiteboard.bufferTimer) {
+    clearTimeout(state.whiteboard.bufferTimer);
+    state.whiteboard.bufferTimer = null;
+  }
   if (state.whiteboard.rafId) {
     cancelAnimationFrame(state.whiteboard.rafId);
     state.whiteboard.rafId = null;

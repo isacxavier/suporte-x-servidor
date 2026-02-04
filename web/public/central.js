@@ -2780,6 +2780,24 @@ const bindRemoteControlEvents = () => {
     }, TEXT_SEND_DEBOUNCE_MS);
   };
 
+  const resetTextBuffer = ({ sendClear = false } = {}) => {
+    if (textState.debounceTimer) {
+      clearTimeout(textState.debounceTimer);
+      textState.debounceTimer = null;
+    }
+    textState.buffer = '';
+    if (dom.remoteTextInput) {
+      dom.remoteTextInput.value = '';
+    }
+    if (!sendClear) return;
+    if (!state.commandState.remoteActive) return;
+    if (!canSendControlCommand()) {
+      warnControlUnavailable();
+      return;
+    }
+    sendCtrlCommand({ t: 'set_text', text: '', append: false });
+  };
+
   const updateTextBuffer = (value) => {
     textState.buffer = value;
     if (dom.remoteTextInput && dom.remoteTextInput.value !== value) {
@@ -2936,6 +2954,7 @@ const bindRemoteControlEvents = () => {
         updateTextBuffer(`${textState.buffer}\n`);
       } else {
         sendCtrlCommand({ t: 'key', key: 'Enter', shift: false });
+        resetTextBuffer();
       }
       return;
     }

@@ -769,6 +769,16 @@ body {
   pointer-events: none;
 }
 
+.whiteboard-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .video-shell video,
 .video-shell .placeholder {
   width: 100%;

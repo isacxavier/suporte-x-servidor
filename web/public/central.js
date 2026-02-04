@@ -62,6 +62,18 @@ const state = {
     remoteStream: null,
     remoteAudioStream: null,
   },
+  whiteboard: {
+    canvas: null,
+    ctx: null,
+    queue: [],
+    strokes: new Map(),
+    rafId: null,
+    resizeRafId: null,
+    metrics: null,
+    lastMetricsAt: 0,
+    lastSize: { width: 0, height: 0 },
+    droppedPoints: 0,
+  },
   legacyShare: {
     room: null,
     pc: null,
@@ -302,6 +314,7 @@ const dom = {
   sessionVideo: document.getElementById('sessionVideo'),
   sessionAudio: document.getElementById('sessionAudio'),
   videoShell: document.getElementById('videoShell'),
+  whiteboardCanvas: document.getElementById('whiteboardCanvas'),
   controlStart: document.getElementById('controlStart'),
   controlQuality: document.getElementById('controlQuality'),
   controlRemote: document.getElementById('controlRemote'),
@@ -364,6 +377,21 @@ const hideToast = () => {
 const CTRL_CHANNEL_LABEL = 'ctrl';
 const POINTER_MOVE_THROTTLE_MS = 33;
 const TEXT_SEND_DEBOUNCE_MS = 80;
+const WHITEBOARD_MAX_POINTS_PER_FRAME = 400;
+const WHITEBOARD_MAX_QUEUE_SIZE = 5000;
+const WHITEBOARD_METRICS_INTERVAL_MS = 2000;
+const WHITEBOARD_COMMAND_TYPES = new Set(['whiteboard', 'whiteboard_event', 'draw', 'drawing', 'wb']);
+const WHITEBOARD_DEBUG = (() => {
+  try {
+    return (
+      Boolean(window.__WHITEBOARD_DEBUG__) ||
+      new URLSearchParams(window.location.search).has('wbMetrics')
+    );
+  } catch (error) {
+    console.warn('Falha ao detectar parâmetro wbMetrics', error);
+    return false;
+  }
+})();
 
 const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObject && !dom.sessionVideo.hidden);
 
@@ -377,6 +405,7 @@ const setCtrlChannel = (channel) => {
       state.media.ctrlChannel.onopen = null;
       state.media.ctrlChannel.onclose = null;
       state.media.ctrlChannel.onerror = null;
+      state.media.ctrlChannel.onmessage = null;
       state.media.ctrlChannel.close();
     } catch (error) {
       console.warn('Falha ao substituir DataChannel de controle', error);
@@ -386,6 +415,7 @@ const setCtrlChannel = (channel) => {
   channel.onopen = () => console.log('[CTRL] open');
   channel.onclose = () => console.log('[CTRL] close');
   channel.onerror = (event) => console.log('[CTRL] error', event);
+  channel.onmessage = handleCtrlChannelMessage;
 };
 
 const ensureCtrlChannelForOffer = (pc) => {
@@ -412,7 +442,7 @@ const sendCtrlCommand = (command) => {
   }
 };
 
-const getNormalizedXY = (videoEl, event) => {
+const getVideoContentRect = (videoEl) => {
   const rect = videoEl.getBoundingClientRect();
   const frameW = videoEl.videoWidth || rect.width;
   const frameH = videoEl.videoHeight || rect.height;
@@ -438,14 +468,307 @@ const getNormalizedXY = (videoEl, event) => {
   const contentLeft = rect.left + offX;
   const contentTop = rect.top + offY;
 
+  return {
+    rect,
+    frameW,
+    frameH,
+    drawW,
+    drawH,
+    offX,
+    offY,
+    contentLeft,
+    contentTop,
+  };
+};
+
+const getNormalizedXY = (videoEl, event) => {
+  const { rect, drawW, drawH, contentLeft, contentTop } = getVideoContentRect(videoEl);
   const x = (event.clientX - contentLeft) / drawW;
   const y = (event.clientY - contentTop) / drawH;
 
   return {
     x: Math.min(1, Math.max(0, x)),
     y: Math.min(1, Math.max(0, y)),
+    width: rect.width,
+    height: rect.height,
   };
 };
+
+const normalizeOriginTimestamp = (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return null;
+  if (value > 1e12) return value / 1e6;
+  return value;
+};
+
+const estimatePayloadBytes = (payload) => {
+  if (!WHITEBOARD_DEBUG) return 0;
+  if (payload == null) return 0;
+  if (typeof payload === 'string') return payload.length;
+  try {
+    return JSON.stringify(payload).length;
+  } catch (error) {
+    console.warn('Falha ao estimar tamanho do payload', error);
+    return 0;
+  }
+};
+
+const initWhiteboardMetrics = () => ({
+  windowStart: performance.now(),
+  receivedEvents: 0,
+  receivedPoints: 0,
+  receivedBytes: 0,
+  drawnPoints: 0,
+  droppedPoints: 0,
+  totalNetworkMs: 0,
+  totalRenderMs: 0,
+  totalE2eMs: 0,
+  latencySamples: 0,
+});
+
+const resetWhiteboardMetrics = () => {
+  state.whiteboard.metrics = initWhiteboardMetrics();
+  state.whiteboard.lastMetricsAt = performance.now();
+  state.whiteboard.droppedPoints = 0;
+};
+
+const reportWhiteboardMetrics = ({ force = false } = {}) => {
+  if (!WHITEBOARD_DEBUG || !state.whiteboard.metrics) return;
+  const now = performance.now();
+  const elapsed = now - state.whiteboard.metrics.windowStart;
+  if (!force && elapsed < WHITEBOARD_METRICS_INTERVAL_MS) return;
+  const metrics = state.whiteboard.metrics;
+  const avgNetwork = metrics.latencySamples ? metrics.totalNetworkMs / metrics.latencySamples : 0;
+  const avgRender = metrics.latencySamples ? metrics.totalRenderMs / metrics.latencySamples : 0;
+  const avgE2e = metrics.latencySamples ? metrics.totalE2eMs / metrics.latencySamples : 0;
+  const eventsPerSec = metrics.receivedEvents ? (metrics.receivedEvents / elapsed) * 1000 : 0;
+  const pointsPerSec = metrics.receivedPoints ? (metrics.receivedPoints / elapsed) * 1000 : 0;
+  const bytesPerSec = metrics.receivedBytes ? (metrics.receivedBytes / elapsed) * 1000 : 0;
+
+  console.info('[WB][metrics]', {
+    windowMs: Math.round(elapsed),
+    events: metrics.receivedEvents,
+    points: metrics.receivedPoints,
+    drawnPoints: metrics.drawnPoints,
+    droppedPoints: metrics.droppedPoints,
+    eventsPerSec: Math.round(eventsPerSec),
+    pointsPerSec: Math.round(pointsPerSec),
+    kbPerSec: Math.round(bytesPerSec / 1024),
+    avgNetworkMs: Math.round(avgNetwork),
+    avgRenderMs: Math.round(avgRender),
+    avgE2eMs: Math.round(avgE2e),
+  });
+
+  resetWhiteboardMetrics();
+};
+
+const scheduleWhiteboardResize = () => {
+  if (state.whiteboard.resizeRafId) return;
+  state.whiteboard.resizeRafId = requestAnimationFrame(() => {
+    state.whiteboard.resizeRafId = null;
+    syncWhiteboardCanvasSize();
+  });
+};
+
+const syncWhiteboardCanvasSize = () => {
+  if (!state.whiteboard.canvas || !state.whiteboard.ctx || !dom.sessionVideo) return;
+  const rect = dom.sessionVideo.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(rect.width * dpr);
+  const height = Math.round(rect.height * dpr);
+  if (state.whiteboard.lastSize.width === width && state.whiteboard.lastSize.height === height) return;
+  state.whiteboard.canvas.width = width;
+  state.whiteboard.canvas.height = height;
+  state.whiteboard.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  state.whiteboard.lastSize = { width, height };
+};
+
+const initWhiteboardCanvas = () => {
+  if (!dom.whiteboardCanvas || !dom.sessionVideo) return;
+  state.whiteboard.canvas = dom.whiteboardCanvas;
+  state.whiteboard.ctx = dom.whiteboardCanvas.getContext('2d');
+  resetWhiteboardMetrics();
+  syncWhiteboardCanvasSize();
+  window.addEventListener('resize', scheduleWhiteboardResize);
+  dom.sessionVideo.addEventListener('loadedmetadata', scheduleWhiteboardResize);
+  dom.sessionVideo.addEventListener('resize', scheduleWhiteboardResize);
+};
+
+const mapPointToCanvas = (point, mapping) => {
+  if (!mapping || typeof point.x !== 'number' || typeof point.y !== 'number') return null;
+  const { drawW, drawH, offX, offY, frameW, frameH } = mapping;
+  const useNormalized = point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1;
+  if (useNormalized) {
+    return {
+      x: offX + point.x * drawW,
+      y: offY + point.y * drawH,
+    };
+  }
+  const useFrameUnits =
+    point.units === 'frame' ||
+    point.unit === 'frame' ||
+    point.frame === true ||
+    (frameW > 1 && frameH > 1 && point.x <= frameW && point.y <= frameH);
+  if (useFrameUnits && frameW > 0 && frameH > 0) {
+    return {
+      x: offX + (point.x / frameW) * drawW,
+      y: offY + (point.y / frameH) * drawH,
+    };
+  }
+  return { x: point.x, y: point.y };
+};
+
+const clearWhiteboardCanvas = () => {
+  if (!state.whiteboard.ctx || !state.whiteboard.canvas) return;
+  state.whiteboard.ctx.clearRect(0, 0, state.whiteboard.canvas.width, state.whiteboard.canvas.height);
+  state.whiteboard.strokes.clear();
+};
+
+const drawWhiteboardPoint = (point, mapping, meta = {}) => {
+  if (!state.whiteboard.ctx || !dom.sessionVideo) return;
+  const resolvedMapping = mapping || getVideoContentRect(dom.sessionVideo);
+  const coords = mapPointToCanvas(point, resolvedMapping);
+  if (!coords) return;
+  const strokeId = point.strokeId || point.stroke || 'default';
+  const color = point.color || '#22c55e';
+  const size = typeof point.size === 'number' ? point.size : 2;
+  const action = point.action || point.phase || 'move';
+  const ctx = state.whiteboard.ctx;
+  const existing = state.whiteboard.strokes.get(strokeId) || null;
+
+  if (action === 'clear') {
+    clearWhiteboardCanvas();
+    return;
+  }
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = size;
+  ctx.strokeStyle = color;
+
+  if (action === 'start' || !existing) {
+    state.whiteboard.strokes.set(strokeId, { x: coords.x, y: coords.y, color, size });
+    ctx.beginPath();
+    ctx.moveTo(coords.x, coords.y);
+    ctx.lineTo(coords.x + 0.01, coords.y + 0.01);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(existing.x, existing.y);
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+    state.whiteboard.strokes.set(strokeId, { x: coords.x, y: coords.y, color, size });
+  }
+
+  if (action === 'end') {
+    state.whiteboard.strokes.delete(strokeId);
+  }
+
+  if (WHITEBOARD_DEBUG && state.whiteboard.metrics) {
+    const t1 = meta.receivedAt ?? performance.now();
+    const t2 = performance.now();
+    const t0 = meta.originTs;
+    state.whiteboard.metrics.drawnPoints += 1;
+    state.whiteboard.metrics.totalRenderMs += t2 - t1;
+    if (typeof t0 === 'number') {
+      state.whiteboard.metrics.totalNetworkMs += t1 - t0;
+      state.whiteboard.metrics.totalE2eMs += t2 - t0;
+      state.whiteboard.metrics.latencySamples += 1;
+    }
+  }
+};
+
+const enqueueWhiteboardPoints = (points, meta = {}) => {
+  if (!points.length) return;
+  const receivedAt = meta.receivedAt || performance.now();
+  const byteSize = meta.byteSize || 0;
+
+  if (WHITEBOARD_DEBUG && state.whiteboard.metrics) {
+    state.whiteboard.metrics.receivedEvents += 1;
+    state.whiteboard.metrics.receivedPoints += points.length;
+    state.whiteboard.metrics.receivedBytes += byteSize;
+  }
+
+  for (const point of points) {
+    const originTs = normalizeOriginTimestamp(point.originTs ?? point.t0 ?? meta.originTs ?? point.ts);
+    state.whiteboard.queue.push({ point, meta: { receivedAt, originTs } });
+  }
+
+  if (state.whiteboard.queue.length > WHITEBOARD_MAX_QUEUE_SIZE) {
+    const overflow = state.whiteboard.queue.length - WHITEBOARD_MAX_QUEUE_SIZE;
+    state.whiteboard.queue.splice(0, overflow);
+    state.whiteboard.droppedPoints += overflow;
+    if (WHITEBOARD_DEBUG && state.whiteboard.metrics) {
+      state.whiteboard.metrics.droppedPoints += overflow;
+    }
+    console.warn('[WB] Fila estourada, descartando pontos antigos', overflow);
+  }
+
+  scheduleWhiteboardRender();
+};
+
+const processWhiteboardQueue = () => {
+  state.whiteboard.rafId = null;
+  if (!state.whiteboard.queue.length || !state.whiteboard.ctx || !dom.sessionVideo) return;
+  const mapping = getVideoContentRect(dom.sessionVideo);
+  const batch = state.whiteboard.queue.splice(0, WHITEBOARD_MAX_POINTS_PER_FRAME);
+
+  for (const entry of batch) {
+    drawWhiteboardPoint(entry.point, mapping, entry.meta);
+  }
+
+  reportWhiteboardMetrics();
+  if (state.whiteboard.queue.length) {
+    scheduleWhiteboardRender();
+  }
+};
+
+const scheduleWhiteboardRender = () => {
+  if (state.whiteboard.rafId) return;
+  state.whiteboard.rafId = requestAnimationFrame(processWhiteboardQueue);
+};
+
+const isWhiteboardMessage = (message) => {
+  if (!message || typeof message !== 'object') return false;
+  const type = message.type || message.t || message.kind;
+  if (type && WHITEBOARD_COMMAND_TYPES.has(String(type).toLowerCase())) return true;
+  if (message.whiteboard === true) return true;
+  return Boolean(message.points || message.batch || message.events);
+};
+
+const normalizeWhiteboardPayload = (payload = {}) => {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  const points = payload.points || payload.batch || payload.events || null;
+  if (Array.isArray(points)) return points;
+  if (typeof payload.x === 'number' && typeof payload.y === 'number') return [payload];
+  return [];
+};
+
+const ingestWhiteboardPayload = (payload = {}) => {
+  if (!payload) return;
+  const receivedAt = performance.now();
+  const byteSize = estimatePayloadBytes(payload);
+  const baseOrigin = normalizeOriginTimestamp(payload.originTs ?? payload.t0 ?? payload.ts);
+  const points = normalizeWhiteboardPayload(payload).map((point) => ({
+    ...point,
+    originTs: normalizeOriginTimestamp(point.originTs ?? point.t0 ?? baseOrigin),
+  }));
+  enqueueWhiteboardPoints(points, { receivedAt, originTs: baseOrigin, byteSize });
+};
+
+function handleCtrlChannelMessage(event) {
+  if (!event?.data) return;
+  if (typeof event.data !== 'string') return;
+  try {
+    const message = JSON.parse(event.data);
+    if (isWhiteboardMessage(message)) {
+      ingestWhiteboardPayload(message.payload ?? message.data ?? message);
+    }
+  } catch (error) {
+    console.warn('Falha ao processar mensagem do canal de controle', error);
+  }
+}
 
 const updateFullscreenLabel = () => {
   if (!dom.controlFullscreen) return;
@@ -1341,6 +1664,12 @@ const updateMediaDisplay = () => {
       } else {
         dom.sessionVideo.setAttribute('hidden', 'hidden');
         dom.sessionVideo.srcObject = null;
+      }
+    }
+    if (dom.whiteboardCanvas) {
+      dom.whiteboardCanvas.hidden = !hasVideo;
+      if (hasVideo) {
+        scheduleWhiteboardResize();
       }
     }
     if (dom.sessionPlaceholder) {
@@ -3300,6 +3629,7 @@ const bootstrap = async () => {
   bindSessionControls();
   bindControlMenu();
   bindViewControls();
+  initWhiteboardCanvas();
   bindRemoteControlEvents();
   initChat();
   bindClosureForm();
@@ -3380,6 +3710,10 @@ function handleSessionChat(message) {
 }
 
 function handleSessionCommandEvent(command) {
+  if (isWhiteboardMessage(command?.data ?? command)) {
+    ingestWhiteboardPayload(command.data ?? command);
+    return;
+  }
   registerCommand(command);
 }
 
@@ -3527,6 +3861,12 @@ function cleanupSession({ rebindHandlers = false } = {}) {
   teardownPeerConnection();
   teardownLegacyShare();
   resetCommandState();
+  state.whiteboard.queue.length = 0;
+  if (state.whiteboard.rafId) {
+    cancelAnimationFrame(state.whiteboard.rafId);
+    state.whiteboard.rafId = null;
+  }
+  clearWhiteboardCanvas();
   setSessionState(SessionStates.IDLE, null);
   state.joinedSessionId = null;
   state.media.sessionId = null;

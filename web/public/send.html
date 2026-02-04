@@ -61,7 +61,10 @@
         if (!room) { alert('Informe o código da sessão'); return; }
         startBtn.disabled = true;
 
-        socket = io();
+        socket = io({
+          transports: ['websocket'],
+          upgrade: false,
+        });
         socket.emit('join', room);
         socket.on('peer-left', () => setStatus('Visualizador saiu.'));
         socket.on('signal', async (data) => {

@@ -1154,8 +1154,7 @@ const pickSessionQueryConstraint = (tech) => {
 const SOCKET_URL = window.location.origin;
 const socket = window.io
   ? window.io(SOCKET_URL, {
-      transports: ['websocket'],
-      upgrade: false,
+      transports: ['polling', 'websocket'],
       withCredentials: true,
       reconnection: true,
       reconnectionAttempts: Infinity,

@@ -172,7 +172,6 @@ const io = new Server(server, {
       }
     : { origin: '*', methods: ['GET', 'POST'], credentials: true },
   allowEIO3: true, // compat com socket.io-client 2.x (Android)
-  transports: ['websocket'],
   pingInterval: 25000,
   pingTimeout: 20000,
 });

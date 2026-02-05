@@ -459,10 +459,23 @@ const sendCtrlCommand = (command) => {
   }
 };
 
-const getVideoContentRect = (videoEl) => {
-  const rect = videoEl.getBoundingClientRect();
-  const frameW = videoEl.videoWidth || rect.width;
-  const frameH = videoEl.videoHeight || rect.height;
+const getVideoFrameSize = (videoEl, rect) => {
+  const frameW = videoEl.videoWidth;
+  const frameH = videoEl.videoHeight;
+  if (frameW && frameH) {
+    return { frameW, frameH };
+  }
+  const track = videoEl.srcObject?.getVideoTracks?.()[0];
+  const settings = track?.getSettings?.() || {};
+  return {
+    frameW: frameW || settings.width || rect.width,
+    frameH: frameH || settings.height || rect.height,
+  };
+};
+
+const getVideoContentRect = (videoEl, rectOverride = null) => {
+  const rect = rectOverride || videoEl.getBoundingClientRect();
+  const { frameW, frameH } = getVideoFrameSize(videoEl, rect);
   const style = window.getComputedStyle(videoEl);
   const objectFit = style.objectFit || 'contain';
 
@@ -499,7 +512,8 @@ const getVideoContentRect = (videoEl) => {
 };
 
 const getNormalizedXY = (videoEl, event) => {
-  const { rect, drawW, drawH, contentLeft, contentTop } = getVideoContentRect(videoEl);
+  const rectSource = event?.currentTarget?.getBoundingClientRect?.() || videoEl.getBoundingClientRect();
+  const { rect, drawW, drawH, contentLeft, contentTop } = getVideoContentRect(videoEl, rectSource);
   const x = (event.clientX - contentLeft) / drawW;
   const y = (event.clientY - contentTop) / drawH;
 

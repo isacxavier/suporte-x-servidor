@@ -514,8 +514,20 @@ const getVideoContentRect = (videoEl, rectOverride = null) => {
 const getNormalizedXY = (videoEl, event) => {
   const rectSource = event?.currentTarget?.getBoundingClientRect?.() || videoEl.getBoundingClientRect();
   const { rect, drawW, drawH, contentLeft, contentTop } = getVideoContentRect(videoEl, rectSource);
-  const x = (event.clientX - contentLeft) / drawW;
-  const y = (event.clientY - contentTop) / drawH;
+  const fallbackClientX = typeof event?.offsetX === 'number' ? rect.left + event.offsetX : rect.left;
+  const fallbackClientY = typeof event?.offsetY === 'number' ? rect.top + event.offsetY : rect.top;
+  const clientX = typeof event?.clientX === 'number' ? event.clientX : fallbackClientX;
+  const clientY = typeof event?.clientY === 'number' ? event.clientY : fallbackClientY;
+  if (!drawW || !drawH) {
+    return {
+      x: 0,
+      y: 0,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+  const x = (clientX - contentLeft) / drawW;
+  const y = (clientY - contentTop) / drawH;
 
   return {
     x: Math.min(1, Math.max(0, x)),
@@ -3078,6 +3090,11 @@ const bindRemoteControlEvents = () => {
     pointerState.pendingMove = null;
     const coords = getNormalizedXY(videoEl, event);
     sendCtrlCommand({
+      t: 'pointer_move',
+      x: coords.x,
+      y: coords.y,
+    });
+    sendCtrlCommand({
       t: 'pointer_down',
       x: coords.x,
       y: coords.y,
@@ -3140,6 +3157,8 @@ const bindRemoteControlEvents = () => {
 
   videoEl.addEventListener('pointerup', finishPointer);
   videoEl.addEventListener('pointercancel', finishPointer);
+  window.addEventListener('pointerup', finishPointer);
+  window.addEventListener('pointercancel', finishPointer);
 
   const handleSpecialKey = (event) => {
     if (!state.commandState.remoteActive) return false;

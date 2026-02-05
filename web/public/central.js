@@ -512,12 +512,16 @@ const getVideoContentRect = (videoEl, rectOverride = null) => {
 };
 
 const getNormalizedXY = (videoEl, event) => {
-  const rectSource = event?.currentTarget?.getBoundingClientRect?.() || videoEl.getBoundingClientRect();
-  const { rect, drawW, drawH, contentLeft, contentTop } = getVideoContentRect(videoEl, rectSource);
-  const fallbackClientX = typeof event?.offsetX === 'number' ? rect.left + event.offsetX : rect.left;
-  const fallbackClientY = typeof event?.offsetY === 'number' ? rect.top + event.offsetY : rect.top;
-  const clientX = typeof event?.clientX === 'number' ? event.clientX : fallbackClientX;
-  const clientY = typeof event?.clientY === 'number' ? event.clientY : fallbackClientY;
+  const rectSource = videoEl.getBoundingClientRect();
+  const { rect, drawW, drawH, offX, offY } = getVideoContentRect(videoEl, rectSource);
+  const hasOffset = typeof event?.offsetX === 'number' && typeof event?.offsetY === 'number';
+  const isVideoTarget = event?.target === videoEl || event?.currentTarget === videoEl;
+  const localX = hasOffset && isVideoTarget
+    ? event.offsetX
+    : (typeof event?.clientX === 'number' ? event.clientX : rect.left) - rect.left;
+  const localY = hasOffset && isVideoTarget
+    ? event.offsetY
+    : (typeof event?.clientY === 'number' ? event.clientY : rect.top) - rect.top;
   if (!drawW || !drawH) {
     return {
       x: 0,
@@ -526,8 +530,8 @@ const getNormalizedXY = (videoEl, event) => {
       height: rect.height,
     };
   }
-  const x = (clientX - contentLeft) / drawW;
-  const y = (clientY - contentTop) / drawH;
+  const x = (localX - offX) / drawW;
+  const y = (localY - offY) / drawH;
 
   return {
     x: Math.min(1, Math.max(0, x)),

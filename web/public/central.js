@@ -47,6 +47,7 @@ const state = {
     sessionId: null,
     pc: null,
     ctrlChannel: null,
+    rtcMetricsIntervalId: null,
     eventsSessionId: null,
     eventsUnsub: null,
     eventsRef: null,
@@ -384,6 +385,7 @@ const WHITEBOARD_MAX_POINTS_PER_FRAME = 400;
 const WHITEBOARD_MAX_QUEUE_SIZE = 5000;
 const WHITEBOARD_COALESCE_THRESHOLD = 1500;
 const WHITEBOARD_METRICS_INTERVAL_MS = 2000;
+const RTC_METRICS_INTERVAL_MS = 5000;
 const WHITEBOARD_COMMAND_TYPES = new Set(['whiteboard', 'whiteboard_event', 'draw', 'drawing', 'wb']);
 const WHITEBOARD_DEBUG = (() => {
   try {
@@ -393,6 +395,17 @@ const WHITEBOARD_DEBUG = (() => {
     );
   } catch (error) {
     console.warn('Falha ao detectar parâmetro wbMetrics', error);
+    return false;
+  }
+})();
+const RTC_METRICS_DEBUG = (() => {
+  try {
+    return (
+      Boolean(window.__RTC_METRICS_DEBUG__) ||
+      new URLSearchParams(window.location.search).has('rtcMetrics')
+    );
+  } catch (error) {
+    console.warn('Falha ao detectar parâmetro rtcMetrics', error);
     return false;
   }
 })();
@@ -1735,6 +1748,9 @@ const stopStreamTracks = (stream) => {
 
 const clearRemoteVideo = () => {
   if (state.media.remoteStream) {
+    state.media.remoteStream.getTracks().forEach((track) => {
+      track.onended = null;
+    });
     stopStreamTracks(state.media.remoteStream);
   }
   state.media.remoteStream = null;
@@ -1750,6 +1766,9 @@ const clearRemoteVideo = () => {
 
 const clearRemoteAudio = () => {
   if (state.media.remoteAudioStream && state.media.remoteAudioStream !== state.media.remoteStream) {
+    state.media.remoteAudioStream.getTracks().forEach((track) => {
+      track.onended = null;
+    });
     stopStreamTracks(state.media.remoteAudioStream);
   }
   state.media.remoteAudioStream = null;
@@ -1767,6 +1786,9 @@ const clearRemoteAudio = () => {
 
 const clearLegacyVideo = () => {
   if (state.legacyShare.remoteStream) {
+    state.legacyShare.remoteStream.getTracks().forEach((track) => {
+      track.onended = null;
+    });
     stopStreamTracks(state.legacyShare.remoteStream);
   }
   state.legacyShare.remoteStream = null;
@@ -1778,6 +1800,9 @@ const clearLegacyAudio = () => {
     state.legacyShare.remoteAudioStream &&
     state.legacyShare.remoteAudioStream !== state.legacyShare.remoteStream
   ) {
+    state.legacyShare.remoteAudioStream.getTracks().forEach((track) => {
+      track.onended = null;
+    });
     stopStreamTracks(state.legacyShare.remoteAudioStream);
   }
   state.legacyShare.remoteAudioStream = null;
@@ -1824,6 +1849,11 @@ const updateMediaDisplay = () => {
 };
 
 const teardownPeerConnection = () => {
+  if (state.media.rtcMetricsIntervalId) {
+    clearInterval(state.media.rtcMetricsIntervalId);
+    sessionResources.intervals.delete(state.media.rtcMetricsIntervalId);
+    state.media.rtcMetricsIntervalId = null;
+  }
   if (state.media.pc) {
     try {
       state.media.pc.ontrack = null;
@@ -1837,6 +1867,10 @@ const teardownPeerConnection = () => {
   }
   if (state.media.ctrlChannel) {
     try {
+      state.media.ctrlChannel.onopen = null;
+      state.media.ctrlChannel.onclose = null;
+      state.media.ctrlChannel.onerror = null;
+      state.media.ctrlChannel.onmessage = null;
       state.media.ctrlChannel.close();
     } catch (error) {
       console.warn('Falha ao encerrar DataChannel de controle', error);
@@ -1862,6 +1896,61 @@ const teardownPeerConnection = () => {
   state.media.local = { screen: null, audio: null };
   clearRemoteVideo();
   clearRemoteAudio();
+};
+
+const stopRtcMetrics = () => {
+  if (!state.media.rtcMetricsIntervalId) return;
+  clearInterval(state.media.rtcMetricsIntervalId);
+  sessionResources.intervals.delete(state.media.rtcMetricsIntervalId);
+  state.media.rtcMetricsIntervalId = null;
+};
+
+const startRtcMetrics = (pc) => {
+  if (!RTC_METRICS_DEBUG || !pc || state.media.rtcMetricsIntervalId) return;
+  const logMetrics = async () => {
+    if (!pc || pc.connectionState === 'closed') {
+      stopRtcMetrics();
+      return;
+    }
+    try {
+      const stats = await pc.getStats();
+      const inboundRtp = [];
+      let selectedPair = null;
+      stats.forEach((report) => {
+        if (report.type === 'inbound-rtp' && (report.kind === 'video' || report.mediaType === 'video')) {
+          inboundRtp.push({
+            id: report.id,
+            framesDecoded: report.framesDecoded ?? null,
+            framesDropped: report.framesDropped ?? null,
+            jitter: report.jitter ?? null,
+            jitterBufferDelay: report.jitterBufferDelay ?? null,
+            totalDecodeTime: report.totalDecodeTime ?? null,
+            keyFramesDecoded: report.keyFramesDecoded ?? null,
+          });
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          if (!selectedPair || report.selected || report.nominated) {
+            selectedPair = report;
+          }
+        }
+      });
+      const candidatePair = selectedPair
+        ? {
+            id: selectedPair.id,
+            currentRoundTripTime: selectedPair.currentRoundTripTime ?? null,
+            availableIncomingBitrate: selectedPair.availableIncomingBitrate ?? null,
+          }
+        : null;
+      console.info('[RTC][metrics]', {
+        inboundRtp,
+        candidatePair,
+      });
+    } catch (error) {
+      console.warn('Falha ao coletar métricas WebRTC', error);
+    }
+  };
+  logMetrics();
+  state.media.rtcMetricsIntervalId = trackInterval(setInterval(logMetrics, RTC_METRICS_INTERVAL_MS));
 };
 
 const ensurePeerConnection = (sessionId) => {
@@ -1924,11 +2013,11 @@ const ensurePeerConnection = (sessionId) => {
         }
       }
       if (dom.sessionPlaceholder) dom.sessionPlaceholder.setAttribute('hidden', 'hidden');
-      event.track.addEventListener('ended', () => {
+      event.track.onended = () => {
         if (state.media.remoteStream === stream) {
           clearRemoteVideo();
         }
-      });
+      };
     }
     if (event.track.kind === 'audio') {
       const audioStream = state.media.remoteAudioStream || new MediaStream();
@@ -1942,7 +2031,7 @@ const ensurePeerConnection = (sessionId) => {
           playPromise.catch(() => {});
         }
       }
-      event.track.addEventListener('ended', () => {
+      event.track.onended = () => {
         if (state.media.remoteAudioStream) {
           const tracks = state.media.remoteAudioStream.getTracks().filter((t) => t !== event.track);
           const stream = new MediaStream(tracks);
@@ -1953,13 +2042,14 @@ const ensurePeerConnection = (sessionId) => {
             dom.sessionAudio.srcObject = state.media.remoteAudioStream;
           }
         }
-      });
+      };
     }
     updateMediaDisplay();
   };
 
   state.media.pc = pc;
   state.media.sessionId = sessionId;
+  startRtcMetrics(pc);
   return pc;
 };
 

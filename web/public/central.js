@@ -462,14 +462,9 @@ const sendCtrlCommand = (command) => {
 const getVideoFrameSize = (videoEl, rect) => {
   const frameW = videoEl.videoWidth;
   const frameH = videoEl.videoHeight;
-  if (frameW && frameH) {
-    return { frameW, frameH };
-  }
-  const track = videoEl.srcObject?.getVideoTracks?.()[0];
-  const settings = track?.getSettings?.() || {};
   return {
-    frameW: frameW || settings.width || rect.width,
-    frameH: frameH || settings.height || rect.height,
+    frameW: frameW || rect.width,
+    frameH: frameH || rect.height,
   };
 };
 
@@ -2935,7 +2930,7 @@ const bindViewControls = () => {
 const bindRemoteControlEvents = () => {
   if (!dom.sessionVideo) return;
   const videoEl = dom.sessionVideo;
-  const captureTargets = [dom.videoShell, dom.whiteboardCanvas, videoEl].filter(Boolean);
+  const captureTargets = [videoEl].filter(Boolean);
   if (!videoEl.hasAttribute('tabindex')) {
     videoEl.tabIndex = 0;
   }
@@ -2973,6 +2968,11 @@ const bindRemoteControlEvents = () => {
 
   const resetPointer = () => {
     pointerState.active = false;
+    try {
+      if (pointerState.pointerId != null) {
+        videoEl.releasePointerCapture(pointerState.pointerId);
+      }
+    } catch (_) {}
     pointerState.pointerId = null;
     pointerState.lastMoveAt = 0;
     pointerState.pendingMove = null;

@@ -2935,6 +2935,7 @@ const bindViewControls = () => {
 const bindRemoteControlEvents = () => {
   if (!dom.sessionVideo) return;
   const videoEl = dom.sessionVideo;
+  const captureTargets = [dom.videoShell, dom.whiteboardCanvas, videoEl].filter(Boolean);
   if (!videoEl.hasAttribute('tabindex')) {
     videoEl.tabIndex = 0;
   }
@@ -3083,10 +3084,11 @@ const bindRemoteControlEvents = () => {
     pointerState.pendingMove = null;
   };
 
-  videoEl.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
+  const onPointerDown = (event) => {
+    if (event.button !== 0 && event.pointerType === 'mouse') return;
     if (!canSendPointer()) return;
     event.preventDefault();
+    event.stopPropagation();
     focusRemoteInput();
     pointerState.active = true;
     pointerState.pointerId = event.pointerId;
@@ -3109,12 +3111,13 @@ const bindRemoteControlEvents = () => {
     } catch (_error) {
       // ignore capture failures
     }
-  });
+  };
 
-  videoEl.addEventListener('pointermove', (event) => {
+  const onPointerMove = (event) => {
     if (!pointerState.active || pointerState.pointerId !== event.pointerId) return;
     if (!canSendPointer()) return;
     event.preventDefault();
+    event.stopPropagation();
     const coords = getNormalizedXY(videoEl, event);
     const now = performance.now();
     const elapsed = now - pointerState.lastMoveAt;
@@ -3136,21 +3139,27 @@ const bindRemoteControlEvents = () => {
         pointerState.moveTimer = setTimeout(flushPointerMove, POINTER_MOVE_THROTTLE_MS - elapsed);
       }
     }
-  });
+  };
 
-  const finishPointer = (event) => {
+  const onPointerUp = (event) => {
     if (!pointerState.active || pointerState.pointerId !== event.pointerId) return;
     if (!canSendPointer()) {
       resetPointer();
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     const coords = getNormalizedXY(videoEl, event);
     if (pointerState.moveTimer) {
       clearTimeout(pointerState.moveTimer);
       pointerState.moveTimer = null;
     }
     pointerState.pendingMove = null;
+    sendCtrlCommand({
+      t: 'pointer_move',
+      x: coords.x,
+      y: coords.y,
+    });
     sendCtrlCommand({
       t: 'pointer_up',
       x: coords.x,
@@ -3159,10 +3168,14 @@ const bindRemoteControlEvents = () => {
     resetPointer();
   };
 
-  videoEl.addEventListener('pointerup', finishPointer);
-  videoEl.addEventListener('pointercancel', finishPointer);
-  window.addEventListener('pointerup', finishPointer);
-  window.addEventListener('pointercancel', finishPointer);
+  captureTargets.forEach((target) => {
+    target.addEventListener('pointerdown', onPointerDown, { passive: false, capture: true });
+    target.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
+    target.addEventListener('pointerup', onPointerUp, { passive: false, capture: true });
+    target.addEventListener('pointercancel', onPointerUp, { passive: false, capture: true });
+  });
+  window.addEventListener('pointerup', onPointerUp, { passive: false, capture: true });
+  window.addEventListener('pointercancel', onPointerUp, { passive: false, capture: true });
 
   const handleSpecialKey = (event) => {
     if (!state.commandState.remoteActive) return false;

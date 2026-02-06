@@ -523,8 +523,14 @@ const getNormalizedXY = (videoEl, event) => {
       y: 0,
       width: rect.width,
       height: rect.height,
+      inBounds: true,
     };
   }
+  const inBounds =
+    localX >= offX &&
+    localX <= offX + drawW &&
+    localY >= offY &&
+    localY <= offY + drawH;
   const x = (localX - offX) / drawW;
   const y = (localY - offY) / drawH;
 
@@ -533,6 +539,7 @@ const getNormalizedXY = (videoEl, event) => {
     y: Math.min(1, Math.max(0, y)),
     width: rect.width,
     height: rect.height,
+    inBounds,
   };
 };
 
@@ -2959,6 +2966,7 @@ const bindRemoteControlEvents = () => {
     lastMoveAt: 0,
     pendingMove: null,
     moveTimer: null,
+    lastCoords: null,
   };
 
   const textState = {
@@ -2976,6 +2984,7 @@ const bindRemoteControlEvents = () => {
     pointerState.pointerId = null;
     pointerState.lastMoveAt = 0;
     pointerState.pendingMove = null;
+    pointerState.lastCoords = null;
     if (pointerState.moveTimer) {
       clearTimeout(pointerState.moveTimer);
       pointerState.moveTimer = null;
@@ -3095,6 +3104,11 @@ const bindRemoteControlEvents = () => {
     pointerState.lastMoveAt = 0;
     pointerState.pendingMove = null;
     const coords = getNormalizedXY(videoEl, event);
+    if (!coords.inBounds) {
+      resetPointer();
+      return;
+    }
+    pointerState.lastCoords = coords;
     sendCtrlCommand({
       t: 'pointer_move',
       x: coords.x,
@@ -3119,6 +3133,10 @@ const bindRemoteControlEvents = () => {
     event.preventDefault();
     event.stopPropagation();
     const coords = getNormalizedXY(videoEl, event);
+    if (!coords.inBounds) {
+      return;
+    }
+    pointerState.lastCoords = coords;
     const now = performance.now();
     const elapsed = now - pointerState.lastMoveAt;
     if (elapsed >= POINTER_MOVE_THROTTLE_MS) {
@@ -3150,21 +3168,24 @@ const bindRemoteControlEvents = () => {
     event.preventDefault();
     event.stopPropagation();
     const coords = getNormalizedXY(videoEl, event);
+    const finalCoords = coords.inBounds ? coords : pointerState.lastCoords;
     if (pointerState.moveTimer) {
       clearTimeout(pointerState.moveTimer);
       pointerState.moveTimer = null;
     }
     pointerState.pendingMove = null;
-    sendCtrlCommand({
-      t: 'pointer_move',
-      x: coords.x,
-      y: coords.y,
-    });
-    sendCtrlCommand({
-      t: 'pointer_up',
-      x: coords.x,
-      y: coords.y,
-    });
+    if (finalCoords) {
+      sendCtrlCommand({
+        t: 'pointer_move',
+        x: finalCoords.x,
+        y: finalCoords.y,
+      });
+      sendCtrlCommand({
+        t: 'pointer_up',
+        x: finalCoords.x,
+        y: finalCoords.y,
+      });
+    }
     resetPointer();
   };
 

@@ -286,6 +286,27 @@
         </main>
       </div>
     </div>
+    <div class="call-modal" id="callModal" hidden>
+      <div class="call-modal-card" role="dialog" aria-live="polite" aria-label="Chamada de voz">
+        <div class="call-modal-header">
+          <strong class="call-modal-title">Chamada de voz</strong>
+          <span class="call-modal-status" id="callModalStatus">Chamando…</span>
+        </div>
+        <div class="call-modal-body">
+          <div class="call-modal-avatar" aria-hidden="true">☎️</div>
+          <div class="call-modal-info">
+            <div class="call-modal-name" id="callModalName">Cliente</div>
+            <div class="call-modal-session" id="callModalSession">Sessão —</div>
+          </div>
+        </div>
+        <div class="call-modal-actions">
+          <button type="button" class="call-btn accept" id="callModalAccept">Aceitar</button>
+          <button type="button" class="call-btn decline" id="callModalDecline">Recusar</button>
+          <button type="button" class="call-btn mute" id="callModalMute" hidden>Silenciar</button>
+          <button type="button" class="call-btn end" id="callModalHangup" hidden>Encerrar</button>
+        </div>
+      </div>
+    </div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/common.js"></script>

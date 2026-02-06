@@ -14,6 +14,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  setDoc,
   serverTimestamp,
   where,
   Timestamp,
@@ -23,6 +24,18 @@ const SessionStates = Object.freeze({
   IDLE: 'IDLE',
   ACTIVE: 'ACTIVE',
   ENDED: 'ENDED',
+});
+
+const CallStates = Object.freeze({
+  IDLE: 'IDLE',
+  OUTGOING_RINGING: 'OUTGOING_RINGING',
+  INCOMING_RINGING: 'INCOMING_RINGING',
+  CONNECTING: 'CONNECTING',
+  IN_CALL: 'IN_CALL',
+  ENDED: 'ENDED',
+  DECLINED: 'DECLINED',
+  TIMEOUT: 'TIMEOUT',
+  FAILED: 'FAILED',
 });
 
 const state = {
@@ -42,6 +55,26 @@ const state = {
     shareActive: false,
     remoteActive: false,
     callActive: false,
+  },
+  call: {
+    sessionId: null,
+    status: CallStates.IDLE,
+    direction: null,
+    callId: null,
+    fromUid: null,
+    toUid: null,
+    pc: null,
+    callDocRef: null,
+    localIceRef: null,
+    remoteIceRef: null,
+    ringTimeoutId: null,
+    remoteIceUnsub: null,
+    remoteIceIds: new Set(),
+    localIceCount: 0,
+    remoteIceCount: 0,
+    muted: false,
+    offerSent: false,
+    answerSent: false,
   },
   media: {
     sessionId: null,
@@ -109,6 +142,18 @@ let queueRetryDelayMs = QUEUE_RETRY_INITIAL_DELAY_MS;
 let queueRetryTimer = null;
 let queueLoadPromise = null;
 let queueUnavailable = false;
+
+const CALL_RING_TIMEOUT_MS = 20000;
+const CALL_STATUS_LABELS = {
+  [CallStates.OUTGOING_RINGING]: 'Chamando…',
+  [CallStates.INCOMING_RINGING]: 'Chamada recebida',
+  [CallStates.CONNECTING]: 'Conectando…',
+  [CallStates.IN_CALL]: 'Em chamada',
+  [CallStates.ENDED]: 'Chamada encerrada',
+  [CallStates.DECLINED]: 'Chamada recusada',
+  [CallStates.TIMEOUT]: 'Sem resposta',
+  [CallStates.FAILED]: 'Falha na chamada',
+};
 
 const isValidFirebaseConfig = (config) => {
   if (!config || typeof config !== 'object') return false;
@@ -270,6 +315,11 @@ const unsubscribeSessionRealtime = (sessionId) => {
   } catch (error) {
     console.warn('Falha ao cancelar listener de eventos', error);
   }
+  try {
+    if (typeof entry.call === 'function') entry.call();
+  } catch (error) {
+    console.warn('Falha ao cancelar listener de chamada', error);
+  }
   sessionRealtimeSubscriptions.delete(sessionId);
 };
 
@@ -333,6 +383,14 @@ const dom = {
   webShareConnect: document.getElementById('webShareConnect'),
   webShareDisconnect: document.getElementById('webShareDisconnect'),
   webShareStatus: document.getElementById('webShareStatus'),
+  callModal: document.getElementById('callModal'),
+  callModalStatus: document.getElementById('callModalStatus'),
+  callModalName: document.getElementById('callModalName'),
+  callModalSession: document.getElementById('callModalSession'),
+  callModalAccept: document.getElementById('callModalAccept'),
+  callModalDecline: document.getElementById('callModalDecline'),
+  callModalMute: document.getElementById('callModalMute'),
+  callModalHangup: document.getElementById('callModalHangup'),
   closureForm: document.getElementById('closureForm'),
   closureOutcome: document.getElementById('closureOutcome'),
   closureSymptom: document.getElementById('closureSymptom'),
@@ -375,6 +433,126 @@ const hideToast = () => {
   if (!dom.toast) return;
   dom.toast.textContent = '';
   dom.toast.hidden = true;
+};
+
+const logCall = (...args) => {
+  console.info('[CALL]', ...args);
+};
+
+const getCallSessionInfo = (sessionId) => {
+  const session = state.sessions.find((entry) => entry.sessionId === sessionId) || null;
+  const name = session?.clientName || 'Cliente';
+  const label = session?.sessionId ? `Sessão ${session.sessionId}` : 'Sessão —';
+  return { session, name, label };
+};
+
+const generateCallId = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const clearCallTimeout = () => {
+  if (state.call.ringTimeoutId) {
+    clearTimeout(state.call.ringTimeoutId);
+    state.call.ringTimeoutId = null;
+  }
+};
+
+const updateCallControlLabel = () => {
+  if (!dom.controlQuality) return;
+  switch (state.call.status) {
+    case CallStates.OUTGOING_RINGING:
+      dom.controlQuality.textContent = 'Cancelar chamada';
+      break;
+    case CallStates.INCOMING_RINGING:
+      dom.controlQuality.textContent = 'Chamada recebida';
+      break;
+    case CallStates.CONNECTING:
+    case CallStates.IN_CALL:
+      dom.controlQuality.textContent = 'Encerrar chamada';
+      break;
+    default:
+      dom.controlQuality.textContent = 'Iniciar chamada';
+      break;
+  }
+};
+
+const updateCallModal = () => {
+  if (!dom.callModal) return;
+  if (state.call.status === CallStates.IDLE) {
+    dom.callModal.hidden = true;
+    return;
+  }
+  const { name, label } = getCallSessionInfo(state.call.sessionId);
+  if (dom.callModalName) dom.callModalName.textContent = name;
+  if (dom.callModalSession) dom.callModalSession.textContent = label;
+  if (dom.callModalStatus) {
+    dom.callModalStatus.textContent = CALL_STATUS_LABELS[state.call.status] || 'Chamada em andamento';
+  }
+
+  const incoming = state.call.status === CallStates.INCOMING_RINGING;
+  const outgoing = state.call.status === CallStates.OUTGOING_RINGING;
+  const active = [CallStates.CONNECTING, CallStates.IN_CALL].includes(state.call.status);
+
+  if (dom.callModalAccept) dom.callModalAccept.hidden = !incoming;
+  if (dom.callModalDecline) {
+    dom.callModalDecline.hidden = !(incoming || outgoing);
+    dom.callModalDecline.textContent = outgoing ? 'Cancelar' : 'Recusar';
+  }
+  if (dom.callModalMute) {
+    dom.callModalMute.hidden = !active;
+    dom.callModalMute.textContent = state.call.muted ? 'Ativar microfone' : 'Silenciar';
+  }
+  if (dom.callModalHangup) dom.callModalHangup.hidden = !active;
+
+  dom.callModal.hidden = false;
+};
+
+const setCallState = (nextState, { sessionId, direction, callId } = {}) => {
+  const previous = state.call.status;
+  state.call.status = nextState;
+  if (sessionId !== undefined) state.call.sessionId = sessionId;
+  if (direction !== undefined) state.call.direction = direction;
+  if (callId !== undefined) state.call.callId = callId;
+  state.commandState.callActive = [CallStates.CONNECTING, CallStates.IN_CALL].includes(nextState);
+  updateCallControlLabel();
+  updateCallModal();
+  if (previous !== nextState) {
+    logCall('state ->', nextState, 'session=', state.call.sessionId);
+  }
+};
+
+const resetCallState = ({ reason = null } = {}) => {
+  clearCallTimeout();
+  if (state.call.remoteIceUnsub) {
+    try {
+      state.call.remoteIceUnsub();
+    } catch (error) {
+      console.warn('Falha ao cancelar listener ICE remoto', error);
+    }
+  }
+  state.call.remoteIceUnsub = null;
+  state.call.remoteIceIds = new Set();
+  state.call.localIceCount = 0;
+  state.call.remoteIceCount = 0;
+  state.call.offerSent = false;
+  state.call.answerSent = false;
+  state.call.callDocRef = null;
+  state.call.localIceRef = null;
+  state.call.remoteIceRef = null;
+  state.call.direction = null;
+  state.call.callId = null;
+  state.call.fromUid = null;
+  state.call.toUid = null;
+  state.call.muted = false;
+  stopCallMedia();
+  setCallState(CallStates.IDLE, { sessionId: null, direction: null });
+  updateCallModal();
+  if (reason) {
+    addChatMessage({ author: 'Sistema', text: reason, kind: 'system' });
+  }
 };
 
 const CTRL_CHANNEL_LABEL = 'ctrl';
@@ -1561,6 +1739,7 @@ const subscribeToSessionRealtime = async (sessionId) => {
   const eventsRef = collection(sessionRef, 'events');
   let unsubMessages = null;
   let unsubEvents = null;
+  let unsubCall = null;
   try {
     const messagesQuery = query(messagesRef, orderBy('ts', 'asc'), limit(CHAT_RENDER_LIMIT * 2));
     unsubMessages = onSnapshot(
@@ -1602,7 +1781,20 @@ const subscribeToSessionRealtime = async (sessionId) => {
   } catch (error) {
     console.error('Falha ao iniciar listener de eventos da sessão', sessionId, error);
   }
-  sessionRealtimeSubscriptions.set(sessionId, { messages: unsubMessages, events: unsubEvents });
+  try {
+    unsubCall = onSnapshot(
+      doc(sessionRef, 'call', 'active'),
+      (snapshot) => {
+        void handleCallSnapshot(sessionId, snapshot);
+      },
+      (error) => {
+        console.error('Falha ao escutar chamada da sessão', sessionId, error);
+      }
+    );
+  } catch (error) {
+    console.error('Falha ao iniciar listener de chamada da sessão', sessionId, error);
+  }
+  sessionRealtimeSubscriptions.set(sessionId, { messages: unsubMessages, events: unsubEvents, call: unsubCall });
 };
 
 const updateSessionRealtimeSubscriptions = (sessions) => {
@@ -1761,6 +1953,7 @@ const resetCommandState = () => {
   if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
   if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
   if (dom.controlStats) dom.controlStats.textContent = 'Encerrar suporte';
+  updateCallControlLabel();
 };
 
 const stopStreamTracks = (stream) => {
@@ -1814,6 +2007,48 @@ const clearRemoteAudio = () => {
     }
   }
   updateMediaDisplay();
+};
+
+const stopCallMedia = () => {
+  stopStreamTracks(state.media.local.audio);
+  state.media.local.audio = null;
+  clearRemoteAudio();
+  if (state.call.pc) {
+    try {
+      state.call.pc.ontrack = null;
+      state.call.pc.onicecandidate = null;
+      state.call.pc.onconnectionstatechange = null;
+      state.call.pc.close();
+    } catch (error) {
+      console.warn('Falha ao encerrar PeerConnection de chamada', error);
+    }
+  }
+  state.call.pc = null;
+  updateMediaDisplay();
+};
+
+const startCallAudioMedia = async (sessionId) => {
+  if (!sessionId) return null;
+  const pc = ensurePeerConnection(sessionId);
+  if (!pc) return null;
+  if (state.media.local.audio) {
+    return pc;
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  removeSendersForType('audio');
+  const senders = stream.getTracks().map((track) => {
+    const sender = pc.addTrack(track, stream);
+    track.addEventListener('ended', () => {
+      void endActiveCall({ reason: 'local_track_ended' });
+    });
+    return sender;
+  });
+  state.media.senders.audio = senders;
+  stopStreamTracks(state.media.local.audio);
+  state.media.local.audio = stream;
+  logCall('CALL media tracks added');
+  updateMediaDisplay();
+  return pc;
 };
 
 const clearLegacyVideo = () => {
@@ -2018,9 +2253,16 @@ const ensurePeerConnection = (sessionId) => {
   };
 
   pc.onconnectionstatechange = () => {
+    if (state.call.sessionId === sessionId && pc.connectionState === 'connected') {
+      setCallState(CallStates.IN_CALL, { sessionId });
+      logCall('CALL connected');
+    }
     if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
       clearRemoteVideo();
       clearRemoteAudio();
+      if (state.call.sessionId === sessionId) {
+        logCall('CALL disconnected', pc.connectionState);
+      }
     }
   };
 
@@ -2161,6 +2403,416 @@ const ensureWebRtcEventListener = async (sessionId) => {
       console.error('Falha ao escutar eventos WebRTC da sessão', sessionId, error);
     }
   );
+};
+
+const ensureCallPeerConnection = (sessionId) => {
+  if (!sessionId) return null;
+  if (state.call.pc && state.call.sessionId && state.call.sessionId !== sessionId) {
+    try {
+      state.call.pc.close();
+    } catch (error) {
+      console.warn('Falha ao encerrar PeerConnection de chamada', error);
+    }
+    state.call.pc = null;
+  }
+  if (state.call.pc) return state.call.pc;
+
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
+
+  pc.onicecandidate = async (event) => {
+    if (!event.candidate) return;
+    if (state.call.sessionId === sessionId && state.call.localIceRef) {
+      try {
+        await addDoc(state.call.localIceRef, {
+          type: 'ice',
+          from: 'tech',
+          sdp: event.candidate.candidate,
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          callId: state.call.callId || null,
+          createdAt: Date.now(),
+        });
+        state.call.localIceCount += 1;
+        logCall('ICE local count', state.call.localIceCount);
+      } catch (error) {
+        console.warn('Falha ao registrar ICE de chamada', error);
+      }
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (state.call.sessionId === sessionId && pc.connectionState === 'connected') {
+      setCallState(CallStates.IN_CALL, { sessionId });
+      logCall('CALL connected');
+    }
+    if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      clearRemoteAudio();
+      if (state.call.sessionId === sessionId) {
+        logCall('CALL disconnected', pc.connectionState);
+      }
+    }
+  };
+
+  pc.ontrack = (event) => {
+    if (!event || !event.track) return;
+    if (event.track.kind !== 'audio') return;
+    const audioStream = state.media.remoteAudioStream || new MediaStream();
+    audioStream.addTrack(event.track);
+    state.media.remoteAudioStream = audioStream;
+    if (dom.sessionAudio) {
+      dom.sessionAudio.srcObject = audioStream;
+      dom.sessionAudio.removeAttribute('hidden');
+      const playPromise = dom.sessionAudio.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {});
+      }
+    }
+    event.track.onended = () => {
+      if (state.media.remoteAudioStream) {
+        const tracks = state.media.remoteAudioStream.getTracks().filter((t) => t !== event.track);
+        const stream = new MediaStream(tracks);
+        state.media.remoteAudioStream = stream.getTracks().length ? stream : null;
+        if (!state.media.remoteAudioStream && dom.sessionAudio) {
+          clearRemoteAudio();
+        } else if (state.media.remoteAudioStream && dom.sessionAudio) {
+          dom.sessionAudio.srcObject = state.media.remoteAudioStream;
+        }
+      }
+    };
+    updateMediaDisplay();
+  };
+
+  state.call.pc = pc;
+  return pc;
+};
+
+const ensureCallRefs = (sessionId) => {
+  const db = ensureFirestore();
+  if (!db || !sessionId) return null;
+  return {
+    callDocRef: doc(db, 'sessions', sessionId, 'call', 'active'),
+    localIceRef: collection(db, 'sessions', sessionId, 'call_ice_tech'),
+    remoteIceRef: collection(db, 'sessions', sessionId, 'call_ice_client'),
+  };
+};
+
+const updateCallDoc = async (sessionId, updates) => {
+  const refs = ensureCallRefs(sessionId);
+  if (!refs) return false;
+  try {
+    await setDoc(refs.callDocRef, updates, { merge: true });
+    return true;
+  } catch (error) {
+    console.error('Falha ao atualizar doc de chamada', error);
+    return false;
+  }
+};
+
+const prepareCallSession = (sessionId, data = {}) => {
+  const refs = ensureCallRefs(sessionId);
+  if (refs) {
+    state.call.callDocRef = refs.callDocRef;
+    state.call.localIceRef = refs.localIceRef;
+    state.call.remoteIceRef = refs.remoteIceRef;
+  }
+  state.call.sessionId = sessionId;
+  state.call.direction = data.direction || state.call.direction;
+  state.call.callId = data.callId || state.call.callId || null;
+  state.call.fromUid = data.fromUid || state.call.fromUid || null;
+  state.call.toUid = data.toUid || state.call.toUid || null;
+};
+
+const scheduleCallTimeout = (sessionId) => {
+  clearCallTimeout();
+  state.call.ringTimeoutId = setTimeout(() => {
+    if (!sessionId || state.call.sessionId !== sessionId) return;
+    if (![CallStates.OUTGOING_RINGING, CallStates.INCOMING_RINGING].includes(state.call.status)) return;
+    logCall('CALL timeout');
+    const endedAt = Date.now();
+    void updateCallDoc(sessionId, {
+      status: 'timeout',
+      reason: 'timeout',
+      endedAt,
+      updatedAt: endedAt,
+    });
+  }, CALL_RING_TIMEOUT_MS);
+};
+
+const ensureRemoteIceListener = (sessionId) => {
+  if (!sessionId || !state.call.remoteIceRef) return;
+  if (state.call.remoteIceUnsub) return;
+  const remoteQuery = query(state.call.remoteIceRef, orderBy('createdAt', 'asc'));
+  state.call.remoteIceUnsub = onSnapshot(
+    remoteQuery,
+    async (snapshot) => {
+      const pc = ensureCallPeerConnection(sessionId);
+      if (!pc) return;
+      for (const change of snapshot.docChanges()) {
+        if (change.type !== 'added') continue;
+        if (state.call.remoteIceIds.has(change.doc.id)) continue;
+        state.call.remoteIceIds.add(change.doc.id);
+        const data = change.doc.data() || {};
+        if (state.call.callId && data.callId && data.callId !== state.call.callId) continue;
+        const candidateValue = data.sdp || data.candidate;
+        if (!candidateValue) continue;
+        try {
+          await pc.addIceCandidate({
+            candidate: candidateValue,
+            sdpMid: data.sdpMid ?? null,
+            sdpMLineIndex: data.sdpMLineIndex ?? null,
+          });
+          state.call.remoteIceCount += 1;
+          logCall('ICE remoto aplicado', state.call.remoteIceCount);
+        } catch (error) {
+          console.error('Erro ao adicionar ICE remoto da chamada', error);
+        }
+      }
+    },
+    (error) => {
+      console.error('Falha ao escutar ICE remoto da chamada', sessionId, error);
+    }
+  );
+};
+
+const handleCallAccepted = async (sessionId, data) => {
+  if (!sessionId) return;
+  prepareCallSession(sessionId, data);
+  clearCallTimeout();
+  setCallState(CallStates.CONNECTING, { sessionId, direction: data.direction, callId: state.call.callId });
+  await startCallAudioMedia(sessionId);
+  ensureRemoteIceListener(sessionId);
+
+  const pc = ensurePeerConnection(sessionId);
+  if (!pc) return;
+
+  if (state.call.direction === 'tech_to_client') {
+    if (!state.call.offerSent) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await updateCallDoc(sessionId, {
+        status: 'accepted',
+        offerSdp: pc.localDescription?.sdp || offer.sdp,
+        updatedAt: Date.now(),
+      });
+      state.call.offerSent = true;
+      logCall('CALL offer saved/applied');
+    }
+    if (data.answerSdp && !pc.currentRemoteDescription) {
+      await pc.setRemoteDescription({ type: 'answer', sdp: data.answerSdp });
+      logCall('CALL answer saved/applied');
+    }
+  }
+
+  if (state.call.direction === 'client_to_tech') {
+    if (data.offerSdp && !pc.currentRemoteDescription) {
+      await pc.setRemoteDescription({ type: 'offer', sdp: data.offerSdp });
+      logCall('CALL offer saved/applied');
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await updateCallDoc(sessionId, {
+        status: 'accepted',
+        answerSdp: pc.localDescription?.sdp || answer.sdp,
+        updatedAt: Date.now(),
+      });
+      state.call.answerSent = true;
+      logCall('CALL answer saved/applied');
+    }
+  }
+};
+
+const handleCallTermination = (sessionId, data = {}) => {
+  if (!sessionId || state.call.sessionId !== sessionId) return;
+  clearCallTimeout();
+  const resolvedState =
+    data.status === 'declined'
+      ? CallStates.DECLINED
+      : data.reason === 'timeout'
+        ? CallStates.TIMEOUT
+        : CallStates.ENDED;
+  setCallState(resolvedState, { sessionId, direction: state.call.direction });
+  const reason =
+    data.reason === 'timeout'
+      ? 'Sem resposta.'
+      : data.status === 'declined'
+        ? 'Chamada recusada.'
+        : 'Chamada encerrada.';
+  resetCallState({ reason });
+};
+
+const handleCallSnapshot = async (sessionId, snapshot) => {
+  if (!sessionId) return;
+  if (!snapshot.exists()) {
+    if (state.call.sessionId === sessionId) {
+      resetCallState({ reason: 'Chamada finalizada.' });
+    }
+    return;
+  }
+  const data = snapshot.data() || {};
+  if (!data.status || !data.direction) return;
+  const direction = data.direction;
+  const incoming = direction === 'client_to_tech';
+  const outgoing = direction === 'tech_to_client';
+  if (!incoming && !outgoing) return;
+
+  if (state.call.sessionId && state.call.sessionId !== sessionId && state.call.status !== CallStates.IDLE) {
+    logCall('CALL recebida em outra sessão enquanto ocupado', sessionId);
+    return;
+  }
+
+  prepareCallSession(sessionId, data);
+  if (incoming) {
+    selectSessionById(sessionId);
+  }
+
+  if (data.status === 'ringing') {
+    if (state.call.status === CallStates.IDLE) {
+      state.call.remoteIceIds = new Set();
+      state.call.remoteIceCount = 0;
+      state.call.localIceCount = 0;
+      state.call.offerSent = false;
+      state.call.answerSent = false;
+    }
+    setCallState(incoming ? CallStates.INCOMING_RINGING : CallStates.OUTGOING_RINGING, {
+      sessionId,
+      direction,
+      callId: state.call.callId,
+    });
+    scheduleCallTimeout(sessionId);
+    return;
+  }
+
+  if (data.status === 'accepted') {
+    try {
+      await handleCallAccepted(sessionId, data);
+    } catch (error) {
+      console.error('Falha ao processar chamada aceita', error);
+      resetCallState({ reason: 'Não foi possível iniciar a chamada.' });
+    }
+    return;
+  }
+
+  if (data.status === 'declined' || data.status === 'ended') {
+    handleCallTermination(sessionId, { ...data, status: data.status });
+  }
+};
+
+const startOutgoingCall = async () => {
+  const session = getSelectedSession();
+  if (!session) {
+    addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada.', kind: 'system' });
+    return;
+  }
+  if (state.call.status !== CallStates.IDLE) {
+    showToast('Já existe uma chamada em andamento.');
+    return;
+  }
+  try {
+    const user = await ensureAuth();
+    if (!user) {
+      showToast('Auth indisponível. Não foi possível iniciar a chamada.');
+      return;
+    }
+  } catch (error) {
+    console.error('Falha ao autenticar antes da chamada', error);
+    showToast('Auth indisponível. Não foi possível iniciar a chamada.');
+    return;
+  }
+  const callId = generateCallId();
+  const tech = getTechProfile();
+  prepareCallSession(session.sessionId, {
+    direction: 'tech_to_client',
+    callId,
+    fromUid: tech.uid,
+    toUid: session.clientUid || null,
+  });
+  state.call.offerSent = false;
+  state.call.answerSent = false;
+  state.call.remoteIceIds = new Set();
+  state.call.remoteIceCount = 0;
+  state.call.localIceCount = 0;
+  const now = Date.now();
+  const updated = await updateCallDoc(session.sessionId, {
+    status: 'ringing',
+    direction: 'tech_to_client',
+    callId,
+    fromUid: tech.uid || null,
+    fromName: tech.name || null,
+    toUid: session.clientUid || null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  if (!updated) {
+    resetCallState({ reason: 'Não foi possível iniciar a chamada.' });
+    return;
+  }
+  setCallState(CallStates.OUTGOING_RINGING, {
+    sessionId: session.sessionId,
+    direction: 'tech_to_client',
+    callId,
+  });
+  scheduleCallTimeout(session.sessionId);
+};
+
+const acceptIncomingCall = async () => {
+  if (state.call.status !== CallStates.INCOMING_RINGING || !state.call.sessionId) return;
+  const sessionId = state.call.sessionId;
+  const acceptedAt = Date.now();
+  const updated = await updateCallDoc(sessionId, {
+    status: 'accepted',
+    acceptedAt,
+    updatedAt: acceptedAt,
+  });
+  if (!updated) {
+    showToast('Não foi possível aceitar a chamada.');
+    return;
+  }
+  setCallState(CallStates.CONNECTING, { sessionId, direction: state.call.direction });
+};
+
+const declineIncomingCall = async () => {
+  if (![CallStates.INCOMING_RINGING, CallStates.OUTGOING_RINGING].includes(state.call.status) || !state.call.sessionId) {
+    return;
+  }
+  const sessionId = state.call.sessionId;
+  const isOutgoing = state.call.status === CallStates.OUTGOING_RINGING;
+  const endedAt = Date.now();
+  const updated = await updateCallDoc(sessionId, {
+    status: isOutgoing ? 'ended' : 'declined',
+    endedAt,
+    reason: isOutgoing ? 'canceled' : 'declined',
+    updatedAt: endedAt,
+  });
+  if (!updated) {
+    showToast('Não foi possível recusar a chamada.');
+  }
+};
+
+const endActiveCall = async ({ reason = 'ended' } = {}) => {
+  if (!state.call.sessionId) return;
+  const sessionId = state.call.sessionId;
+  setCallState(CallStates.ENDED, { sessionId, direction: state.call.direction });
+  const endedAt = Date.now();
+  await updateCallDoc(sessionId, {
+    status: 'ended',
+    endedAt,
+    reason,
+    updatedAt: endedAt,
+  });
+};
+
+const toggleCallMute = () => {
+  const stream = state.media.local.audio;
+  if (!stream) return;
+  const nextMuted = !state.call.muted;
+  stream.getAudioTracks().forEach((track) => {
+    track.enabled = !nextMuted;
+  });
+  state.call.muted = nextMuted;
+  logCall('CALL media muted', nextMuted);
+  updateCallModal();
 };
 
 const setLegacyStatus = (message) => {
@@ -2433,20 +3085,8 @@ const startLocalCall = async () => {
     return;
   }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    const pc = ensurePeerConnection(session.sessionId);
+    const pc = await startCallAudioMedia(session.sessionId);
     if (!pc) return;
-    removeSendersForType('audio');
-    const senders = stream.getTracks().map((track) => {
-      const sender = pc.addTrack(track, stream);
-      track.addEventListener('ended', () => {
-        stopLocalCall(true);
-      });
-      return sender;
-    });
-    state.media.senders.audio = senders;
-    stopStreamTracks(state.media.local.audio);
-    state.media.local.audio = stream;
     ensureCtrlChannelForOffer(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -2461,12 +3101,7 @@ const startLocalCall = async () => {
 };
 
 const stopLocalCall = async (notifyRemote = false) => {
-  removeSendersForType('audio');
-  stopStreamTracks(state.media.local.audio);
-  state.media.local.audio = null;
-  if (!state.media.remoteAudioStream && dom.sessionAudio) {
-    clearRemoteAudio();
-  }
+  stopCallMedia();
   updateMediaDisplay();
   if (notifyRemote && socket && !socket.disconnected) {
     try {
@@ -2684,6 +3319,9 @@ function handleSessionEnded(sessionId, reason = 'peer_ended') {
     teardownPeerConnection();
     resetCommandState();
   }
+  if (state.call.sessionId === sessionId && state.call.status !== CallStates.IDLE) {
+    void endActiveCall({ reason: 'session_end' });
+  }
   if (state.joinedSessionId === sessionId) {
     state.joinedSessionId = null;
   }
@@ -2718,6 +3356,10 @@ function resetDashboard({ sessionId = null, reason = 'peer_ended' } = {}) {
     state.joinedSessionId ||
     state.selectedSessionId ||
     null;
+
+  if (state.call.sessionId && state.call.status !== CallStates.IDLE) {
+    void endActiveCall({ reason: 'session_reset' });
+  }
 
   cleanupSession({ rebindHandlers: true });
   unsubscribeAllSessionRealtime();
@@ -2784,6 +3426,10 @@ function handleCommandEffects(command, { local = false } = {}) {
       if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
       break;
     case 'call_start':
+      if (state.call.status !== CallStates.IDLE) {
+        logCall('CALL comando legacy ignorado (chamada ativa).');
+        break;
+      }
       state.commandState.callActive = true;
       if (dom.controlQuality) dom.controlQuality.textContent = 'Encerrar chamada';
       if (by !== 'tech') {
@@ -2791,6 +3437,10 @@ function handleCommandEffects(command, { local = false } = {}) {
       }
       break;
     case 'call_end':
+      if (state.call.status !== CallStates.IDLE) {
+        void endActiveCall({ reason: 'legacy_end' });
+        break;
+      }
       state.commandState.callActive = false;
       if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
       stopLocalCall(false);
@@ -2853,14 +3503,44 @@ const bindSessionControls = () => {
 
   if (dom.controlQuality) {
     dom.controlQuality.addEventListener('click', () => {
-      const nextType = state.commandState.callActive ? 'call_end' : 'call_start';
-      emitSessionCommand(nextType);
+      if (state.call.status === CallStates.IDLE) {
+        void startOutgoingCall();
+        return;
+      }
+      if (state.call.status === CallStates.INCOMING_RINGING) {
+        showToast('Chamada recebida. Use o modal para aceitar ou recusar.');
+        return;
+      }
+      void endActiveCall({ reason: 'hangup' });
     });
   }
 
   if (dom.controlStats) {
     dom.controlStats.addEventListener('click', () => {
       emitSessionCommand('session_end');
+    });
+  }
+};
+
+const bindCallModalControls = () => {
+  if (dom.callModalAccept) {
+    dom.callModalAccept.addEventListener('click', () => {
+      void acceptIncomingCall();
+    });
+  }
+  if (dom.callModalDecline) {
+    dom.callModalDecline.addEventListener('click', () => {
+      void declineIncomingCall();
+    });
+  }
+  if (dom.callModalHangup) {
+    dom.callModalHangup.addEventListener('click', () => {
+      void endActiveCall({ reason: 'hangup' });
+    });
+  }
+  if (dom.callModalMute) {
+    dom.callModalMute.addEventListener('click', () => {
+      toggleCallMute();
     });
   }
 };
@@ -3309,6 +3989,17 @@ const getSelectedSession = () => {
   return state.sessions.find((s) => s.sessionId === state.selectedSessionId) || null;
 };
 
+const selectSessionById = (sessionId) => {
+  if (!sessionId || state.selectedSessionId === sessionId) return;
+  state.selectedSessionId = sessionId;
+  state.renderedChatSessionId = null;
+  resetCommandState();
+  if (state.media.sessionId && state.media.sessionId !== sessionId) {
+    teardownPeerConnection();
+  }
+  renderSessions();
+};
+
 const selectDefaultSession = () => {
   const previous = state.selectedSessionId;
   if (previous) {
@@ -3498,7 +4189,7 @@ const renderSessions = () => {
         dom.sessionVideo?.focus({ preventScroll: true });
       }
     }
-    if (telemetry && typeof telemetry.callActive === 'boolean' && dom.controlQuality) {
+    if (telemetry && typeof telemetry.callActive === 'boolean' && dom.controlQuality && state.call.status === CallStates.IDLE) {
       state.commandState.callActive = telemetry.callActive;
       dom.controlQuality.textContent = telemetry.callActive ? 'Encerrar chamada' : 'Iniciar chamada';
     }
@@ -3948,6 +4639,7 @@ const bootstrap = async () => {
   resetCommandState();
   bindPanelsToSessionHeight();
   bindSessionControls();
+  bindCallModalControls();
   bindControlMenu();
   bindViewControls();
   initWhiteboardCanvas();

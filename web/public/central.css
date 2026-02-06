@@ -1100,6 +1100,128 @@ body {
   opacity: 0.85;
 }
 
+.call-modal {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+}
+
+.call-modal[hidden] {
+  display: none;
+}
+
+.call-modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+  min-width: 280px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  backdrop-filter: blur(18px);
+}
+
+.call-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.call-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.call-modal-status {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.call-modal-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.call-modal-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  font-size: 22px;
+}
+
+.call-modal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.call-modal-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.call-modal-session {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.call-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.call-btn {
+  border-radius: 999px;
+  border: 1px solid transparent;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+
+.call-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.2);
+}
+
+.call-btn.accept {
+  background: rgba(52, 211, 153, 0.2);
+  border-color: rgba(52, 211, 153, 0.45);
+  color: var(--success);
+}
+
+.call-btn.decline {
+  background: rgba(248, 113, 113, 0.18);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--danger);
+}
+
+.call-btn.mute {
+  background: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: var(--text);
+}
+
+.call-btn.end {
+  background: rgba(248, 113, 113, 0.25);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: var(--danger);
+}
+
 @media (max-width: 1320px) {
   .session-area {
     grid-template-columns: minmax(280px, 1fr);

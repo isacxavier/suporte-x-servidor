@@ -525,7 +525,7 @@ const setCallState = (nextState, { sessionId, direction, callId } = {}) => {
   }
 };
 
-const resetCallState = ({ reason = null } = {}) => {
+const cleanupCallSession = ({ message = null } = {}) => {
   clearCallTimeout();
   if (state.call.remoteIceUnsub) {
     try {
@@ -540,6 +540,7 @@ const resetCallState = ({ reason = null } = {}) => {
   state.call.remoteIceCount = 0;
   state.call.offerSent = false;
   state.call.answerSent = false;
+  state.call.pendingRemoteIce = [];
   state.call.callDocRef = null;
   state.call.localIceRef = null;
   state.call.remoteIceRef = null;
@@ -551,8 +552,8 @@ const resetCallState = ({ reason = null } = {}) => {
   stopCallMedia();
   setCallState(CallStates.IDLE, { sessionId: null, direction: null });
   updateCallModal();
-  if (reason) {
-    addChatMessage({ author: 'Sistema', text: reason, kind: 'system' });
+  if (message) {
+    addChatMessage({ author: 'Sistema', text: message, kind: 'system' });
   }
 };
 
@@ -2036,15 +2037,14 @@ const startCallAudioMedia = async (sessionId) => {
     return pc;
   }
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  removeSendersForType('audio');
-  const senders = stream.getTracks().map((track) => {
-    const sender = pc.addTrack(track, stream);
+  removeSendersForType('audio', { pc, useStoredSenders: false, stopTracks: true });
+  stream.getTracks().forEach((track) => {
+    pc.addTrack(track, stream);
     track.addEventListener('ended', () => {
       void endActiveCall({ reason: 'local_track_ended' });
     });
-    return sender;
   });
-  state.media.senders.audio = senders;
+  state.media.senders.audio = [];
   stopStreamTracks(state.media.local.audio);
   state.media.local.audio = stream;
   logCall('CALL media tracks added');
@@ -2671,14 +2671,14 @@ const handleCallTermination = (sessionId, data = {}) => {
       : data.status === 'declined'
         ? 'Chamada recusada.'
         : 'Chamada encerrada.';
-  resetCallState({ reason });
+  cleanupCallSession({ message: reason });
 };
 
 const handleCallSnapshot = async (sessionId, snapshot) => {
   if (!sessionId) return;
   if (!snapshot.exists()) {
     if (state.call.sessionId === sessionId) {
-      resetCallState({ reason: 'Chamada finalizada.' });
+      cleanupCallSession({ message: 'Chamada finalizada.' });
     }
     return;
   }
@@ -2721,7 +2721,7 @@ const handleCallSnapshot = async (sessionId, snapshot) => {
       await handleCallAccepted(sessionId, data);
     } catch (error) {
       console.error('Falha ao processar chamada aceita', error);
-      resetCallState({ reason: 'Não foi possível iniciar a chamada.' });
+      cleanupCallSession({ message: 'Não foi possível iniciar a chamada.' });
     }
     return;
   }
@@ -2777,7 +2777,7 @@ const startOutgoingCall = async () => {
     updatedAt: now,
   });
   if (!updated) {
-    resetCallState({ reason: 'Não foi possível iniciar a chamada.' });
+    cleanupCallSession({ message: 'Não foi possível iniciar a chamada.' });
     return;
   }
   setCallState(CallStates.OUTGOING_RINGING, {
@@ -2820,6 +2820,7 @@ const declineIncomingCall = async () => {
   if (!updated) {
     showToast('Não foi possível recusar a chamada.');
   }
+  cleanupCallSession();
 };
 
 const endActiveCall = async ({ reason = 'ended' } = {}) => {
@@ -2833,6 +2834,7 @@ const endActiveCall = async ({ reason = 'ended' } = {}) => {
     reason,
     updatedAt: endedAt,
   });
+  cleanupCallSession();
 };
 
 const toggleCallMute = () => {
@@ -3029,15 +3031,33 @@ const handleLegacySignal = async (payload) => {
   }
 };
 
-const removeSendersForType = (type) => {
-  const pc = state.media.pc;
-  if (!pc) return;
+const removeSendersForType = (type, { pc = null, useStoredSenders = true, stopTracks = false } = {}) => {
+  const activePc = pc || state.media.pc;
+  if (!activePc) return;
+  if (!useStoredSenders) {
+    const senders = activePc.getSenders().filter((sender) => sender.track?.kind === type);
+    senders.forEach((sender) => {
+      try {
+        activePc.removeTrack(sender);
+      } catch (err) {
+        console.warn('Falha ao remover sender', err);
+      }
+      if (stopTracks && sender.track) {
+        try {
+          sender.track.stop();
+        } catch (err) {
+          console.warn('Falha ao encerrar track removida', err);
+        }
+      }
+    });
+    return;
+  }
   const senders = state.media.senders[type] || [];
-  const activeSenders = new Set(pc.getSenders());
+  const activeSenders = new Set(activePc.getSenders());
   senders.forEach((sender) => {
     if (!activeSenders.has(sender)) return;
     try {
-      pc.removeTrack(sender);
+      activePc.removeTrack(sender);
     } catch (err) {
       console.warn('Falha ao remover sender', err);
     }

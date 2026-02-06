@@ -75,6 +75,7 @@ const state = {
     muted: false,
     offerSent: false,
     answerSent: false,
+    pendingRemoteIce: [],
   },
   media: {
     sessionId: null,
@@ -2029,7 +2030,7 @@ const stopCallMedia = () => {
 
 const startCallAudioMedia = async (sessionId) => {
   if (!sessionId) return null;
-  const pc = ensurePeerConnection(sessionId);
+  const pc = ensureCallPeerConnection(sessionId);
   if (!pc) return null;
   if (state.media.local.audio) {
     return pc;
@@ -2558,12 +2559,17 @@ const ensureRemoteIceListener = (sessionId) => {
         if (state.call.callId && data.callId && data.callId !== state.call.callId) continue;
         const candidateValue = data.sdp || data.candidate;
         if (!candidateValue) continue;
+        const iceObj = {
+          candidate: candidateValue,
+          sdpMid: data.sdpMid ?? null,
+          sdpMLineIndex: data.sdpMLineIndex ?? null,
+        };
+        if (!pc.remoteDescription) {
+          state.call.pendingRemoteIce.push(iceObj);
+          continue;
+        }
         try {
-          await pc.addIceCandidate({
-            candidate: candidateValue,
-            sdpMid: data.sdpMid ?? null,
-            sdpMLineIndex: data.sdpMLineIndex ?? null,
-          });
+          await pc.addIceCandidate(iceObj);
           state.call.remoteIceCount += 1;
           logCall('ICE remoto aplicado', state.call.remoteIceCount);
         } catch (error) {
@@ -2577,6 +2583,19 @@ const ensureRemoteIceListener = (sessionId) => {
   );
 };
 
+const flushPendingIce = async (pc) => {
+  if (!pc?.remoteDescription) return;
+  const pending = state.call.pendingRemoteIce || [];
+  state.call.pendingRemoteIce = [];
+  for (const ice of pending) {
+    try {
+      await pc.addIceCandidate(ice);
+    } catch (error) {
+      console.warn('Falha ao aplicar ICE pendente da chamada', error);
+    }
+  }
+};
+
 const handleCallAccepted = async (sessionId, data) => {
   if (!sessionId) return;
   prepareCallSession(sessionId, data);
@@ -2585,7 +2604,7 @@ const handleCallAccepted = async (sessionId, data) => {
   await startCallAudioMedia(sessionId);
   ensureRemoteIceListener(sessionId);
 
-  const pc = ensurePeerConnection(sessionId);
+  const pc = ensureCallPeerConnection(sessionId);
   if (!pc) return;
 
   if (state.call.direction === 'tech_to_client') {
@@ -2602,6 +2621,7 @@ const handleCallAccepted = async (sessionId, data) => {
     }
     if (data.answerSdp && !pc.currentRemoteDescription) {
       await pc.setRemoteDescription({ type: 'answer', sdp: data.answerSdp });
+      await flushPendingIce(pc);
       logCall('CALL answer saved/applied');
     }
   }
@@ -2609,6 +2629,7 @@ const handleCallAccepted = async (sessionId, data) => {
   if (state.call.direction === 'client_to_tech') {
     if (data.offerSdp && !pc.currentRemoteDescription) {
       await pc.setRemoteDescription({ type: 'offer', sdp: data.offerSdp });
+      await flushPendingIce(pc);
       logCall('CALL offer saved/applied');
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);

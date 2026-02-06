@@ -595,18 +595,24 @@ const hasActiveVideo = () => Boolean(dom.sessionVideo && dom.sessionVideo.srcObj
 const canSendControlCommand = () =>
   Boolean(state.commandState.remoteActive && state.media.ctrlChannel && state.media.ctrlChannel.readyState === 'open');
 
+const resetRemoteControlChannel = () => {
+  if (!state.media.ctrlChannel) return;
+  try {
+    state.media.ctrlChannel.onopen = null;
+    state.media.ctrlChannel.onclose = null;
+    state.media.ctrlChannel.onerror = null;
+    state.media.ctrlChannel.onmessage = null;
+    state.media.ctrlChannel.close();
+  } catch (error) {
+    console.warn('Falha ao encerrar DataChannel de controle', error);
+  }
+  state.media.ctrlChannel = null;
+};
+
 const setCtrlChannel = (channel) => {
   if (!channel) return;
   if (state.media.ctrlChannel && state.media.ctrlChannel !== channel) {
-    try {
-      state.media.ctrlChannel.onopen = null;
-      state.media.ctrlChannel.onclose = null;
-      state.media.ctrlChannel.onerror = null;
-      state.media.ctrlChannel.onmessage = null;
-      state.media.ctrlChannel.close();
-    } catch (error) {
-      console.warn('Falha ao substituir DataChannel de controle', error);
-    }
+    resetRemoteControlChannel();
   }
   state.media.ctrlChannel = channel;
   channel.onopen = () => console.log('[CTRL] open');
@@ -636,6 +642,22 @@ const sendCtrlCommand = (command) => {
     state.media.ctrlChannel.send(JSON.stringify(command));
   } catch (error) {
     console.warn('Falha ao enviar comando de controle', error);
+  }
+};
+
+const renegotiateRemoteControl = async (sessionId) => {
+  if (!sessionId) return;
+  const pc = ensurePeerConnection(sessionId);
+  if (!pc) return;
+  ensureCtrlChannelForOffer(pc);
+  try {
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    if (socket && !socket.disconnected) {
+      socket.emit('signal:offer', { sessionId, sdp: pc.localDescription });
+    }
+  } catch (error) {
+    console.warn('Falha ao renegociar canal de controle remoto', error);
   }
 };
 
@@ -2134,17 +2156,8 @@ const teardownPeerConnection = () => {
     }
   }
   if (state.media.ctrlChannel) {
-    try {
-      state.media.ctrlChannel.onopen = null;
-      state.media.ctrlChannel.onclose = null;
-      state.media.ctrlChannel.onerror = null;
-      state.media.ctrlChannel.onmessage = null;
-      state.media.ctrlChannel.close();
-    } catch (error) {
-      console.warn('Falha ao encerrar DataChannel de controle', error);
-    }
+    resetRemoteControlChannel();
   }
-  state.media.ctrlChannel = null;
   state.media.pc = null;
   state.media.sessionId = null;
   if (state.media.eventsUnsub) {
@@ -3050,6 +3063,7 @@ const removeSendersForType = (type, { pc = null, useStoredSenders = true, stopTr
         }
       }
     });
+    state.media.senders[type] = [];
     return;
   }
   const senders = state.media.senders[type] || [];
@@ -3479,6 +3493,7 @@ function handleCommandEffects(command, { local = false } = {}) {
     case 'remote_disable':
       state.commandState.remoteActive = false;
       if (dom.controlRemote) dom.controlRemote.textContent = 'Solicitar acesso remoto';
+      resetRemoteControlChannel();
       break;
     case 'call_start':
       if (state.call.status !== CallStates.IDLE) {
@@ -3552,7 +3567,13 @@ const bindSessionControls = () => {
   if (dom.controlRemote) {
     dom.controlRemote.addEventListener('click', () => {
       const nextType = state.commandState.remoteActive ? 'remote_disable' : 'remote_enable';
-      emitSessionCommand(nextType);
+      emitSessionCommand(nextType, {}, () => {
+        if (nextType === 'remote_enable') {
+          const session = getSelectedSession();
+          if (!session) return;
+          void renegotiateRemoteControl(session.sessionId);
+        }
+      });
     });
   }
 

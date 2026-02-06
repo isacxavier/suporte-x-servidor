@@ -2490,13 +2490,24 @@ const ensureCallPeerConnection = (sessionId) => {
   return pc;
 };
 
-const ensureCallRefs = (sessionId) => {
+const ensureCallRefs = (sessionId, direction = state.call.direction) => {
   const db = ensureFirestore();
   if (!db || !sessionId) return null;
+  const techToClient = direction === 'tech_to_client';
   return {
     callDocRef: doc(db, 'sessions', sessionId, 'call', 'active'),
-    localIceRef: collection(db, 'sessions', sessionId, 'call_ice_tech'),
-    remoteIceRef: collection(db, 'sessions', sessionId, 'call_ice_client'),
+    localIceRef: collection(
+      db,
+      'sessions',
+      sessionId,
+      techToClient ? 'call_ice_client' : 'call_ice_tech'
+    ),
+    remoteIceRef: collection(
+      db,
+      'sessions',
+      sessionId,
+      techToClient ? 'call_ice_tech' : 'call_ice_client'
+    ),
   };
 };
 
@@ -2513,14 +2524,14 @@ const updateCallDoc = async (sessionId, updates) => {
 };
 
 const prepareCallSession = (sessionId, data = {}) => {
-  const refs = ensureCallRefs(sessionId);
+  state.call.sessionId = sessionId;
+  state.call.direction = data.direction || state.call.direction;
+  const refs = ensureCallRefs(sessionId, state.call.direction);
   if (refs) {
     state.call.callDocRef = refs.callDocRef;
     state.call.localIceRef = refs.localIceRef;
     state.call.remoteIceRef = refs.remoteIceRef;
   }
-  state.call.sessionId = sessionId;
-  state.call.direction = data.direction || state.call.direction;
   state.call.callId = data.callId || state.call.callId || null;
   state.call.fromUid = data.fromUid || state.call.fromUid || null;
   state.call.toUid = data.toUid || state.call.toUid || null;
@@ -3019,11 +3030,14 @@ const handleLegacySignal = async (payload) => {
 };
 
 const removeSendersForType = (type) => {
-  if (!state.media.pc) return;
+  const pc = state.media.pc;
+  if (!pc) return;
   const senders = state.media.senders[type] || [];
+  const activeSenders = new Set(pc.getSenders());
   senders.forEach((sender) => {
+    if (!activeSenders.has(sender)) return;
     try {
-      state.media.pc.removeTrack(sender);
+      pc.removeTrack(sender);
     } catch (err) {
       console.warn('Falha ao remover sender', err);
     }

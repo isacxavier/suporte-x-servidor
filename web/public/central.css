@@ -1000,11 +1000,35 @@ body {
 
 .chat-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
   align-items: center;
   margin-top: 0;
   box-shadow: 0 -10px 24px rgba(2, 6, 23, 0.18);
+}
+
+.chat-tool-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.chat-tool-btn.recording {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+
+.chat-media-status {
+  min-height: 18px;
+}
+
+.chat-upload-progress {
+  width: 100%;
+  height: 8px;
 }
 
 .chat-form input {

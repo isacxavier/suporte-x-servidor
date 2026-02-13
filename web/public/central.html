@@ -240,9 +240,14 @@
                     <button type="button" data-reply="Vou encerrar o atendimento por aqui. Qualquer novidade é só chamar!">Avisar sobre encerramento</button>
                   </div>
                   <form class="chat-form" id="chatForm">
+                    <button type="button" class="chat-tool-btn" id="chatAudioBtn" aria-label="Gravar áudio">🎤</button>
+                    <button type="button" class="chat-tool-btn" id="chatAttachBtn" aria-label="Anexar arquivo">📎</button>
                     <input type="text" placeholder="Digite uma mensagem ou use /comandos" aria-label="Mensagem" id="chatInput" />
+                    <input type="file" id="chatFileInput" hidden />
                     <button type="submit">Enviar</button>
                   </form>
+                  <div class="chat-media-status muted small" id="chatMediaStatus" aria-live="polite"></div>
+                  <progress class="chat-upload-progress" id="chatUploadProgress" max="100" value="0" hidden></progress>
                 </div>
               </div>
             </aside>

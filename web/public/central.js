@@ -1708,8 +1708,10 @@ const normalizeMessageDoc = (doc) => {
   const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '';
   const fileUrl = typeof data.fileUrl === 'string' ? data.fileUrl.trim() : '';
   const fileName = typeof data.fileName === 'string' ? data.fileName.trim() : '';
-  const mimeType = typeof data.mimeType === 'string' ? data.mimeType.trim() : '';
-  const fileSize = typeof data.fileSize === 'number' && Number.isFinite(data.fileSize) ? data.fileSize : null;
+  const contentTypeRaw = data.contentType || data.mimeType || '';
+  const mimeType = typeof contentTypeRaw === 'string' ? contentTypeRaw.trim() : '';
+  const fileSizeRaw = data.size ?? data.fileSize;
+  const fileSize = typeof fileSizeRaw === 'number' && Number.isFinite(fileSizeRaw) ? fileSizeRaw : null;
   const hasRenderableContent =
     Boolean(text || audioUrl || imageUrl || fileUrl) ||
     (type === 'image' && !imageUrl) ||
@@ -1759,8 +1761,10 @@ const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
   const imageUrl = typeof message.imageUrl === 'string' ? message.imageUrl.trim() : '';
   const fileUrl = typeof message.fileUrl === 'string' ? message.fileUrl.trim() : '';
   const fileName = typeof message.fileName === 'string' ? message.fileName.trim() : '';
-  const mimeType = typeof message.mimeType === 'string' ? message.mimeType.trim() : '';
-  const fileSize = typeof message.fileSize === 'number' && Number.isFinite(message.fileSize) ? message.fileSize : null;
+  const contentTypeRaw = message.contentType || message.mimeType || '';
+  const mimeType = typeof contentTypeRaw === 'string' ? contentTypeRaw.trim() : '';
+  const fileSizeRaw = message.size ?? message.fileSize;
+  const fileSize = typeof fileSizeRaw === 'number' && Number.isFinite(fileSizeRaw) ? fileSizeRaw : null;
   const hasRenderableContent =
     Boolean(text || audioUrl || imageUrl || fileUrl) ||
     (type === 'image' && !imageUrl) ||
@@ -3605,6 +3609,16 @@ const setChatMediaStatus = (text = '') => {
   dom.chatMediaStatus.textContent = text;
 };
 
+const formatFirebaseError = (error, fallbackMessage = 'Falha no upload.') => {
+  if (!error) return fallbackMessage;
+  const code = typeof error.code === 'string' && error.code.trim() ? error.code.trim() : null;
+  const message = typeof error.message === 'string' && error.message.trim() ? error.message.trim() : null;
+  if (code && message) return `${fallbackMessage} (${code}: ${message})`;
+  if (code) return `${fallbackMessage} (${code})`;
+  if (message) return `${fallbackMessage} (${message})`;
+  return fallbackMessage;
+};
+
 const setUploadProgress = (value = null) => {
   if (!dom.chatUploadProgress) return;
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -3641,18 +3655,26 @@ const persistChatMessage = async (sessionId, payload) => {
   }
 };
 
-const uploadBlobToStorage = async (sessionId, blob, { extension = 'bin', contentType = 'application/octet-stream', prefix = 'file' } = {}) => {
+const uploadBlobToStorage = async (
+  sessionId,
+  messageId,
+  blob,
+  { extension = 'bin', contentType = 'application/octet-stream' } = {}
+) => {
+  await ensureAuth();
   const storage = ensureStorage();
   if (!storage) throw new Error('storage-unavailable');
-  const uploadId = generateMessageId();
-  const objectRef = ref(storage, `chat/${sessionId}/${prefix}_${uploadId}.${extension}`);
+  const safeExtension = String(extension || 'bin').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'bin';
+  const objectRef = ref(storage, `chat/${sessionId}/${messageId}.${safeExtension}`);
   const task = uploadBytesResumable(objectRef, blob, { contentType });
   return new Promise((resolve, reject) => {
     task.on(
       'state_changed',
       (snapshot) => {
         const progress = snapshot.totalBytes ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100 : 0;
+        const clamped = Math.max(0, Math.min(100, progress));
         setUploadProgress(progress);
+        setChatMediaStatus(`Fazendo upload… ${Math.round(clamped)}%`);
       },
       (error) => reject(error),
       async () => {
@@ -3711,30 +3733,47 @@ const sendAttachmentMessage = async (file) => {
     return;
   }
   state.chatComposer.uploading = true;
-  setChatMediaStatus('Fazendo upload…');
+  const messageId = generateMessageId();
+  setChatMediaStatus('Fazendo upload… 0%');
   try {
     const isImage = typeof file.type === 'string' && file.type.startsWith('image/');
     const extension = file.name.includes('.') ? file.name.split('.').pop() : isImage ? 'jpg' : 'bin';
-    const url = await uploadBlobToStorage(session.sessionId, file, {
+    const contentType = file.type || 'application/octet-stream';
+    const url = await uploadBlobToStorage(session.sessionId, messageId, file, {
       extension,
-      contentType: file.type || 'application/octet-stream',
-      prefix: isImage ? 'image' : 'file',
+      contentType,
     });
     if (isImage) {
-      sendChatPayload({ type: 'image', imageUrl: url, text: file.name || 'Imagem' });
+      sendChatPayload({
+        id: messageId,
+        type: 'image',
+        imageUrl: url,
+        text: file.name || 'Imagem',
+        fileName: file.name || 'imagem',
+        contentType,
+        size: file.size,
+      });
     } else {
       sendChatPayload({
+        id: messageId,
         type: 'file',
         fileUrl: url,
         text: file.name || 'Arquivo',
         fileName: file.name || 'arquivo',
-        mimeType: file.type || 'application/octet-stream',
+        contentType,
+        mimeType: contentType,
         fileSize: file.size,
+        size: file.size,
       });
     }
   } catch (error) {
     console.error('Falha no upload de anexo', error);
-    addChatMessage({ author: 'Sistema', text: 'Falha ao enviar anexo.', kind: 'system' });
+    addChatMessage({
+      author: 'Sistema',
+      text: formatFirebaseError(error, 'Falha ao enviar anexo.'),
+      kind: 'system',
+    });
+    setChatMediaStatus(formatFirebaseError(error, 'Falha ao enviar anexo.'));
   } finally {
     state.chatComposer.uploading = false;
     setUploadProgress(null);
@@ -3790,18 +3829,32 @@ const toggleAudioRecording = async () => {
       stopChatAudioCapture();
       const session = getSelectedSession();
       if (!session) return;
+      const messageId = generateMessageId();
       state.chatComposer.uploading = true;
-      setChatMediaStatus('Enviando áudio…');
+      setChatMediaStatus('Fazendo upload… 0%');
       try {
-        const url = await uploadBlobToStorage(session.sessionId, blob, {
+        const contentType = blob.type || 'audio/webm';
+        const url = await uploadBlobToStorage(session.sessionId, messageId, blob, {
           extension: 'webm',
-          contentType: blob.type || 'audio/webm',
-          prefix: 'audio',
+          contentType,
         });
-        sendChatPayload({ type: 'audio', audioUrl: url, text: 'Áudio' });
+        sendChatPayload({
+          id: messageId,
+          type: 'audio',
+          audioUrl: url,
+          text: 'Áudio',
+          fileName: `audio-${messageId}.webm`,
+          contentType,
+          size: blob.size,
+        });
       } catch (error) {
         console.error('Falha no envio de áudio', error);
-        addChatMessage({ author: 'Sistema', text: 'Falha ao enviar áudio.', kind: 'system' });
+        addChatMessage({
+          author: 'Sistema',
+          text: formatFirebaseError(error, 'Falha ao enviar áudio.'),
+          kind: 'system',
+        });
+        setChatMediaStatus(formatFirebaseError(error, 'Falha ao enviar áudio.'));
       } finally {
         state.chatComposer.uploading = false;
         setUploadProgress(null);

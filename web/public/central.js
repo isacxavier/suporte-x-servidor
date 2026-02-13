@@ -1661,7 +1661,11 @@ const normalizeMessageDoc = (doc) => {
   const audioUrl = typeof data.audioUrl === 'string' ? data.audioUrl.trim() : '';
   const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '';
   const fileUrl = typeof data.fileUrl === 'string' ? data.fileUrl.trim() : '';
-  const hasRenderableContent = Boolean(text || audioUrl || imageUrl || fileUrl);
+  const hasRenderableContent =
+    Boolean(text || audioUrl || imageUrl || fileUrl) ||
+    (type === 'image' && !imageUrl) ||
+    (type === 'audio' && !audioUrl) ||
+    (type === 'file' && !fileUrl);
   if (!hasRenderableContent) return null;
   const ts =
     toMillis(data.ts) ||
@@ -1702,7 +1706,12 @@ const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
   const audioUrl = typeof message.audioUrl === 'string' ? message.audioUrl.trim() : '';
   const imageUrl = typeof message.imageUrl === 'string' ? message.imageUrl.trim() : '';
   const fileUrl = typeof message.fileUrl === 'string' ? message.fileUrl.trim() : '';
-  if (!text && !audioUrl && !imageUrl && !fileUrl) return null;
+  const hasRenderableContent =
+    Boolean(text || audioUrl || imageUrl || fileUrl) ||
+    (type === 'image' && !imageUrl) ||
+    (type === 'audio' && !audioUrl) ||
+    (type === 'file' && !fileUrl);
+  if (!hasRenderableContent) return null;
   return {
     ...message,
     id,
@@ -1815,13 +1824,12 @@ const subscribeToSessionRealtime = async (sessionId) => {
       messagesQuery,
       (snapshot) => {
         const dedupedMessages = new Map();
-        snapshot.docs
-          .map((docSnap) => normalizeMessageDoc(docSnap))
-          .filter(Boolean)
-          .forEach((msg) => {
-            console.log('[chat] message received', { source: 'firestore', id: msg.id, sessionId });
-            dedupedMessages.set(msg.id, msg);
-          });
+        snapshot.docs.forEach((docSnap) => {
+          const msg = normalizeMessageDoc(docSnap);
+          if (!msg) return;
+          console.log('[chat] message received', { source: 'firestore', sessionId, raw: docSnap.data(), message: msg });
+          dedupedMessages.set(msg.id, msg);
+        });
         const messages = Array.from(dedupedMessages.values()).sort((a, b) => a.ts - b.ts);
         state.chatBySession.set(sessionId, messages);
         const lastMessage = messages.length ? messages[messages.length - 1] : null;
@@ -1992,7 +2000,7 @@ const ingestChatMessage = (message, { isSelf = false, source = 'unknown' } = {})
   if (!message || !message.sessionId) return;
   const normalized = normalizeChatMessage(message, { defaultFrom: isSelf ? 'tech' : 'client' });
   if (!normalized) return;
-  console.log('[chat] message received', { source, id: normalized.id, sessionId: message.sessionId });
+  console.log('[chat] message received', { source, sessionId: message.sessionId, message: normalized });
   const previousSize = (state.chatBySession.get(message.sessionId) || []).length;
   pushChatToStore(message.sessionId, normalized);
   const currentSize = (state.chatBySession.get(message.sessionId) || []).length;
@@ -3280,6 +3288,11 @@ const createChatEntryElement = ({
     image.loading = 'lazy';
     image.className = 'message-image';
     body.appendChild(image);
+  } else if (type === 'image' && !imageUrl) {
+    const missingUrlNode = document.createElement('div');
+    missingUrlNode.className = 'message-text';
+    missingUrlNode.textContent = 'anexo sem URL';
+    body.appendChild(missingUrlNode);
   } else if (type === 'file' && fileUrl) {
     const link = document.createElement('a');
     link.href = fileUrl;
@@ -4472,7 +4485,7 @@ const addChatMessage = ({
   kind = 'client',
   ts = Date.now(),
 }) => {
-  if (!text && !audioUrl && !imageUrl && !fileUrl) return;
+  if (!text && !audioUrl && !imageUrl && !fileUrl && !(type === 'image')) return;
   scheduleRender(() => {
     if (!dom.chatThread) return;
     const container = dom.chatThread;
@@ -4927,6 +4940,7 @@ function handleSessionUpdated(session) {
 }
 
 function handleSessionChat(message) {
+  console.log('[chat] message received', { source: 'socket', raw: message });
   ingestChatMessage(message, { source: 'socket' });
 }
 

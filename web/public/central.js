@@ -3659,13 +3659,14 @@ const uploadBlobToStorage = async (
   sessionId,
   messageId,
   blob,
-  { extension = 'bin', contentType = 'application/octet-stream' } = {}
+  { extension = 'bin', contentType = 'application/octet-stream', folder = 'attachments' } = {}
 ) => {
   await ensureAuth();
   const storage = ensureStorage();
   if (!storage) throw new Error('storage-unavailable');
   const safeExtension = String(extension || 'bin').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'bin';
-  const objectRef = ref(storage, `chat/${sessionId}/${messageId}.${safeExtension}`);
+  const safeFolder = String(folder || 'attachments').replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase() || 'attachments';
+  const objectRef = ref(storage, `sessions/${sessionId}/${safeFolder}/${messageId}.${safeExtension}`);
   const task = uploadBytesResumable(objectRef, blob, { contentType });
   return new Promise((resolve, reject) => {
     task.on(
@@ -3837,6 +3838,7 @@ const toggleAudioRecording = async () => {
         const url = await uploadBlobToStorage(session.sessionId, messageId, blob, {
           extension: 'webm',
           contentType,
+          folder: 'audio',
         });
         sendChatPayload({
           id: messageId,

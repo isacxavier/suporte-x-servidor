@@ -56,6 +56,11 @@ const state = {
     remoteActive: false,
     callActive: false,
   },
+  lightbox: {
+    isOpen: false,
+    imageUrl: '',
+    zoom: 1,
+  },
   call: {
     sessionId: null,
     status: CallStates.IDLE,
@@ -392,6 +397,13 @@ const dom = {
   callModalDecline: document.getElementById('callModalDecline'),
   callModalMute: document.getElementById('callModalMute'),
   callModalHangup: document.getElementById('callModalHangup'),
+  imageLightbox: document.getElementById('imageLightbox'),
+  imageLightboxImage: document.getElementById('imageLightboxImage'),
+  imageLightboxClose: document.getElementById('imageLightboxClose'),
+  imageLightboxDownload: document.getElementById('imageLightboxDownload'),
+  imageLightboxOpen: document.getElementById('imageLightboxOpen'),
+  imageLightboxZoomIn: document.getElementById('imageLightboxZoomIn'),
+  imageLightboxZoomOut: document.getElementById('imageLightboxZoomOut'),
   closureForm: document.getElementById('closureForm'),
   closureOutcome: document.getElementById('closureOutcome'),
   closureSymptom: document.getElementById('closureSymptom'),
@@ -3254,6 +3266,99 @@ const stopLocalCall = async (notifyRemote = false) => {
   if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
 };
 
+const LIGHTBOX_MIN_ZOOM = 0.5;
+const LIGHTBOX_MAX_ZOOM = 4;
+const LIGHTBOX_ZOOM_STEP = 0.2;
+
+const clampLightboxZoom = (value) => Math.min(LIGHTBOX_MAX_ZOOM, Math.max(LIGHTBOX_MIN_ZOOM, value));
+
+const updateLightboxZoom = () => {
+  if (!dom.imageLightboxImage) return;
+  dom.imageLightboxImage.style.transform = `scale(${state.lightbox.zoom})`;
+};
+
+const updateLightboxActions = (imageUrl) => {
+  if (dom.imageLightboxDownload) {
+    dom.imageLightboxDownload.href = imageUrl;
+  }
+  if (dom.imageLightboxOpen) {
+    dom.imageLightboxOpen.href = imageUrl;
+  }
+};
+
+const setLightboxZoom = (nextZoom) => {
+  state.lightbox.zoom = clampLightboxZoom(nextZoom);
+  updateLightboxZoom();
+};
+
+const closeImageLightbox = () => {
+  if (!state.lightbox.isOpen) return;
+  state.lightbox.isOpen = false;
+  state.lightbox.imageUrl = '';
+  state.lightbox.zoom = 1;
+  if (dom.imageLightboxImage) {
+    dom.imageLightboxImage.removeAttribute('src');
+    dom.imageLightboxImage.style.transform = 'scale(1)';
+  }
+  if (dom.imageLightbox) {
+    dom.imageLightbox.hidden = true;
+  }
+};
+
+const openImageLightbox = (imageUrl) => {
+  if (!imageUrl || !dom.imageLightbox || !dom.imageLightboxImage) return;
+  state.lightbox.isOpen = true;
+  state.lightbox.imageUrl = imageUrl;
+  state.lightbox.zoom = 1;
+  dom.imageLightbox.hidden = false;
+  dom.imageLightboxImage.src = imageUrl;
+  updateLightboxActions(imageUrl);
+  updateLightboxZoom();
+};
+
+const bindImageLightboxControls = () => {
+  if (!dom.imageLightbox) return;
+
+  dom.imageLightboxClose?.addEventListener('click', closeImageLightbox);
+  dom.imageLightboxZoomIn?.addEventListener('click', () => setLightboxZoom(state.lightbox.zoom + LIGHTBOX_ZOOM_STEP));
+  dom.imageLightboxZoomOut?.addEventListener('click', () => setLightboxZoom(state.lightbox.zoom - LIGHTBOX_ZOOM_STEP));
+
+  dom.imageLightbox.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.lightboxClose === 'true') {
+      closeImageLightbox();
+    }
+  });
+
+  dom.imageLightbox.addEventListener(
+    'wheel',
+    (event) => {
+      if (!state.lightbox.isOpen) return;
+      event.preventDefault();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      setLightboxZoom(state.lightbox.zoom + direction * LIGHTBOX_ZOOM_STEP);
+    },
+    { passive: false }
+  );
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeImageLightbox();
+      return;
+    }
+    if (!state.lightbox.isOpen) return;
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      setLightboxZoom(state.lightbox.zoom + LIGHTBOX_ZOOM_STEP);
+    }
+    if (event.key === '-') {
+      event.preventDefault();
+      setLightboxZoom(state.lightbox.zoom - LIGHTBOX_ZOOM_STEP);
+    }
+  });
+};
+
 const createChatEntryElement = ({
   author,
   text,
@@ -3287,6 +3392,15 @@ const createChatEntryElement = ({
     image.alt = 'Imagem enviada no chat';
     image.loading = 'lazy';
     image.className = 'message-image';
+    image.tabIndex = 0;
+    image.role = 'button';
+    image.addEventListener('click', () => openImageLightbox(imageUrl));
+    image.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openImageLightbox(imageUrl);
+      }
+    });
     body.appendChild(image);
   } else if (type === 'image' && !imageUrl) {
     const missingUrlNode = document.createElement('div');
@@ -4849,6 +4963,7 @@ const bootstrap = async () => {
   bindCallModalControls();
   bindControlMenu();
   bindViewControls();
+  bindImageLightboxControls();
   initWhiteboardCanvas();
   bindRemoteControlEvents();
   initChat();

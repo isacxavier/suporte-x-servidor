@@ -3321,7 +3321,6 @@ const sendChatMessage = (text) => {
   socket.emit('session:chat:send', payload, (ack) => {
     if (ack?.ok) {
       if (dom.chatInput) dom.chatInput.value = '';
-      ingestChatMessage({ ...payload, id: ack.id || payload.id }, { isSelf: true });
     } else {
       addChatMessage({
         author: 'Sistema',

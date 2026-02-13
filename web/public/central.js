@@ -1687,7 +1687,12 @@ const normalizeMessageDoc = (doc) => {
 const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
   if (!message) return null;
   const ts = typeof message.ts === 'number' ? message.ts : Date.now();
-  const id = message.id || `${message.sessionId || 'session'}-${ts}`;
+  const id =
+    message.id ||
+    message.messageId ||
+    message.clientMessageId ||
+    message.msgId ||
+    `${message.sessionId || 'session'}-${ts}`;
   const from = message.from || defaultFrom;
   const typeRaw =
     message.type || (message.audioUrl ? 'audio' : message.imageUrl ? 'image' : message.fileUrl ? 'file' : 'text');
@@ -1809,7 +1814,15 @@ const subscribeToSessionRealtime = async (sessionId) => {
     unsubMessages = onSnapshot(
       messagesQuery,
       (snapshot) => {
-        const messages = snapshot.docs.map((docSnap) => normalizeMessageDoc(docSnap)).filter(Boolean);
+        const dedupedMessages = new Map();
+        snapshot.docs
+          .map((docSnap) => normalizeMessageDoc(docSnap))
+          .filter(Boolean)
+          .forEach((msg) => {
+            console.log('[chat] message received', { source: 'firestore', id: msg.id, sessionId });
+            dedupedMessages.set(msg.id, msg);
+          });
+        const messages = Array.from(dedupedMessages.values()).sort((a, b) => a.ts - b.ts);
         state.chatBySession.set(sessionId, messages);
         const lastMessage = messages.length ? messages[messages.length - 1] : null;
         const index = state.sessions.findIndex((s) => s.sessionId === sessionId);
@@ -1961,17 +1974,28 @@ const syncSessionStores = (session) => {
 const pushChatToStore = (sessionId, message) => {
   if (!sessionId || !message) return;
   const bucket = ensureChatStore(sessionId);
-  if (bucket.some((entry) => entry.id === message.id)) return;
-  bucket.push(message);
+  const duplicateIndex = bucket.findIndex((entry) => entry.id === message.id);
+  if (duplicateIndex >= 0) {
+    bucket[duplicateIndex] = {
+      ...bucket[duplicateIndex],
+      ...message,
+      ts: Math.max(bucket[duplicateIndex].ts || 0, message.ts || 0),
+    };
+  } else {
+    bucket.push(message);
+  }
   if (bucket.length > CHAT_RENDER_LIMIT) bucket.splice(0, bucket.length - CHAT_RENDER_LIMIT);
   state.chatBySession.set(sessionId, bucket.sort((a, b) => a.ts - b.ts));
 };
 
-const ingestChatMessage = (message, { isSelf = false } = {}) => {
+const ingestChatMessage = (message, { isSelf = false, source = 'unknown' } = {}) => {
   if (!message || !message.sessionId) return;
   const normalized = normalizeChatMessage(message, { defaultFrom: isSelf ? 'tech' : 'client' });
   if (!normalized) return;
+  console.log('[chat] message received', { source, id: normalized.id, sessionId: message.sessionId });
+  const previousSize = (state.chatBySession.get(message.sessionId) || []).length;
   pushChatToStore(message.sessionId, normalized);
+  const currentSize = (state.chatBySession.get(message.sessionId) || []).length;
   const sessionIndex = state.sessions.findIndex((s) => s.sessionId === message.sessionId);
   if (sessionIndex >= 0) {
     const updatedLog = ensureChatStore(message.sessionId);
@@ -1982,6 +2006,7 @@ const ingestChatMessage = (message, { isSelf = false } = {}) => {
       extra: { ...(existing.extra || {}), chatLog: updatedLog, lastMessageAt: normalized.ts },
     };
   }
+  if (currentSize === previousSize) return;
   if (state.renderedChatSessionId === message.sessionId) {
     const session = state.sessions.find((s) => s.sessionId === message.sessionId);
     const isTech = normalized.from === 'tech';
@@ -4902,7 +4927,7 @@ function handleSessionUpdated(session) {
 }
 
 function handleSessionChat(message) {
-  ingestChatMessage(message);
+  ingestChatMessage(message, { source: 'socket' });
 }
 
 function handleSessionCommandEvent(command) {

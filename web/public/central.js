@@ -19,6 +19,12 @@ import {
   where,
   Timestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import {
+  getStorage,
+  ref,
+  uploadBytesResumable,
+  getDownloadURL,
+} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js';
 
 const SessionStates = Object.freeze({
   IDLE: 'IDLE',
@@ -124,10 +130,20 @@ const state = {
     active: false,
     pendingRoom: null,
   },
+  chatComposer: {
+    recording: false,
+    recorder: null,
+    stream: null,
+    chunks: [],
+    startedAt: 0,
+    timerId: null,
+    uploading: false,
+  },
 };
 
 let firebaseAppInstance = null;
 let firestoreInstance = null;
+let storageInstance = null;
 let authInstance = null;
 let authReadyPromise = null;
 let firebaseConfigCache = null;
@@ -246,6 +262,19 @@ const ensureFirestore = () => {
     firestoreInstance = null;
   }
   return firestoreInstance;
+};
+
+const ensureStorage = () => {
+  if (storageInstance) return storageInstance;
+  const app = ensureFirebaseApp();
+  if (!app) return null;
+  try {
+    storageInstance = getStorage(app);
+  } catch (error) {
+    console.error('Erro ao inicializar Firebase Storage', error);
+    storageInstance = null;
+  }
+  return storageInstance;
 };
 
 const waitForAuthUser = () =>
@@ -369,6 +398,11 @@ const dom = {
   chatThread: document.getElementById('chatThread'),
   chatForm: document.getElementById('chatForm'),
   chatInput: document.getElementById('chatInput'),
+  chatAudioBtn: document.getElementById('chatAudioBtn'),
+  chatAttachBtn: document.getElementById('chatAttachBtn'),
+  chatFileInput: document.getElementById('chatFileInput'),
+  chatMediaStatus: document.getElementById('chatMediaStatus'),
+  chatUploadProgress: document.getElementById('chatUploadProgress'),
   quickReplies: document.querySelectorAll('.quick-replies button[data-reply]'),
   sessionVideo: document.getElementById('sessionVideo'),
   sessionAudio: document.getElementById('sessionAudio'),
@@ -1673,6 +1707,9 @@ const normalizeMessageDoc = (doc) => {
   const audioUrl = typeof data.audioUrl === 'string' ? data.audioUrl.trim() : '';
   const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '';
   const fileUrl = typeof data.fileUrl === 'string' ? data.fileUrl.trim() : '';
+  const fileName = typeof data.fileName === 'string' ? data.fileName.trim() : '';
+  const mimeType = typeof data.mimeType === 'string' ? data.mimeType.trim() : '';
+  const fileSize = typeof data.fileSize === 'number' && Number.isFinite(data.fileSize) ? data.fileSize : null;
   const hasRenderableContent =
     Boolean(text || audioUrl || imageUrl || fileUrl) ||
     (type === 'image' && !imageUrl) ||
@@ -1695,6 +1732,9 @@ const normalizeMessageDoc = (doc) => {
     audioUrl,
     imageUrl,
     fileUrl,
+    fileName,
+    mimeType,
+    fileSize,
     status: typeof data.status === 'string' ? data.status : '',
     ts,
   };
@@ -1718,6 +1758,9 @@ const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
   const audioUrl = typeof message.audioUrl === 'string' ? message.audioUrl.trim() : '';
   const imageUrl = typeof message.imageUrl === 'string' ? message.imageUrl.trim() : '';
   const fileUrl = typeof message.fileUrl === 'string' ? message.fileUrl.trim() : '';
+  const fileName = typeof message.fileName === 'string' ? message.fileName.trim() : '';
+  const mimeType = typeof message.mimeType === 'string' ? message.mimeType.trim() : '';
+  const fileSize = typeof message.fileSize === 'number' && Number.isFinite(message.fileSize) ? message.fileSize : null;
   const hasRenderableContent =
     Boolean(text || audioUrl || imageUrl || fileUrl) ||
     (type === 'image' && !imageUrl) ||
@@ -1733,6 +1776,9 @@ const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
     audioUrl,
     imageUrl,
     fileUrl,
+    fileName,
+    mimeType,
+    fileSize,
     status: typeof message.status === 'string' ? message.status : '',
     ts,
   };
@@ -2037,6 +2083,9 @@ const ingestChatMessage = (message, { isSelf = false, source = 'unknown' } = {})
       audioUrl: normalized.audioUrl,
       imageUrl: normalized.imageUrl,
       fileUrl: normalized.fileUrl,
+      fileName: normalized.fileName,
+      mimeType: normalized.mimeType,
+      fileSize: normalized.fileSize,
       kind: isTech ? 'self' : 'client',
       ts: normalized.ts,
     });
@@ -3366,6 +3415,9 @@ const createChatEntryElement = ({
   audioUrl = '',
   imageUrl = '',
   fileUrl = '',
+  fileName = '',
+  mimeType = '',
+  fileSize = null,
   kind = 'client',
   ts = Date.now(),
 }) => {
@@ -3412,7 +3464,10 @@ const createChatEntryElement = ({
     link.href = fileUrl;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
-    link.textContent = text || 'Abrir anexo';
+    const fallbackName = fileName || 'Abrir anexo';
+    const sizeLabel = typeof fileSize === 'number' && fileSize >= 0 ? ` (${Math.max(1, Math.round(fileSize / 1024))} KB)` : '';
+    link.textContent = text || `${fallbackName}${sizeLabel}`;
+    if (mimeType) link.type = mimeType;
     body.appendChild(link);
   }
 
@@ -3478,6 +3533,9 @@ const renderChatForSession = () => {
             audioUrl: msg.audioUrl,
             imageUrl: msg.imageUrl,
             fileUrl: msg.fileUrl,
+            fileName: msg.fileName,
+            mimeType: msg.mimeType,
+            fileSize: msg.fileSize,
             kind: isTech ? 'self' : 'client',
             ts: msg.ts,
           })
@@ -3542,7 +3600,74 @@ const syncWebRtcForSelectedSession = () => {
   void ensureWebRtcEventListener(session.sessionId);
 };
 
-const sendChatMessage = (text) => {
+const setChatMediaStatus = (text = '') => {
+  if (!dom.chatMediaStatus) return;
+  dom.chatMediaStatus.textContent = text;
+};
+
+const setUploadProgress = (value = null) => {
+  if (!dom.chatUploadProgress) return;
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    dom.chatUploadProgress.hidden = true;
+    dom.chatUploadProgress.value = 0;
+    return;
+  }
+  dom.chatUploadProgress.hidden = false;
+  dom.chatUploadProgress.value = Math.max(0, Math.min(100, value));
+};
+
+const generateMessageId = () => {
+  const now = Date.now();
+  return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random()}`;
+};
+
+const persistChatMessage = async (sessionId, payload) => {
+  try {
+    await ensureAuth();
+    const db = ensureFirestore();
+    if (!db) return;
+    const messageRef = doc(db, 'sessions', sessionId, 'messages', payload.id);
+    await setDoc(
+      messageRef,
+      {
+        ...payload,
+        sessionId,
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    console.warn('Falha ao persistir mensagem no Firestore', error);
+  }
+};
+
+const uploadBlobToStorage = async (sessionId, blob, { extension = 'bin', contentType = 'application/octet-stream', prefix = 'file' } = {}) => {
+  const storage = ensureStorage();
+  if (!storage) throw new Error('storage-unavailable');
+  const uploadId = generateMessageId();
+  const objectRef = ref(storage, `chat/${sessionId}/${prefix}_${uploadId}.${extension}`);
+  const task = uploadBytesResumable(objectRef, blob, { contentType });
+  return new Promise((resolve, reject) => {
+    task.on(
+      'state_changed',
+      (snapshot) => {
+        const progress = snapshot.totalBytes ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100 : 0;
+        setUploadProgress(progress);
+      },
+      (error) => reject(error),
+      async () => {
+        try {
+          const url = await getDownloadURL(task.snapshot.ref);
+          resolve(url);
+        } catch (error) {
+          reject(error);
+        }
+      }
+    );
+  });
+};
+
+const sendChatPayload = (payload, { clearInput = false } = {}) => {
   const session = getSelectedSession();
   if (!session) {
     addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada.', kind: 'system' });
@@ -3552,12 +3677,17 @@ const sendChatMessage = (text) => {
     addChatMessage({ author: 'Sistema', text: 'Sem conexão com o servidor.', kind: 'system' });
     return;
   }
-  const now = Date.now();
-  const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random()}`;
-  const payload = { sessionId: session.sessionId, from: 'tech', text, id, ts: now };
-  socket.emit('session:chat:send', payload, (ack) => {
+  const mergedPayload = {
+    sessionId: session.sessionId,
+    from: 'tech',
+    ts: Date.now(),
+    id: generateMessageId(),
+    ...payload,
+  };
+  socket.emit('session:chat:send', mergedPayload, (ack) => {
     if (ack?.ok) {
-      if (dom.chatInput) dom.chatInput.value = '';
+      if (clearInput && dom.chatInput) dom.chatInput.value = '';
+      setChatMediaStatus('');
     } else {
       addChatMessage({
         author: 'Sistema',
@@ -3566,6 +3696,122 @@ const sendChatMessage = (text) => {
       });
     }
   });
+  void persistChatMessage(session.sessionId, mergedPayload);
+};
+
+const sendChatMessage = (text) => {
+  sendChatPayload({ type: 'text', text }, { clearInput: true });
+};
+
+const sendAttachmentMessage = async (file) => {
+  if (!file) return;
+  const session = getSelectedSession();
+  if (!session) {
+    addChatMessage({ author: 'Sistema', text: 'Nenhuma sessão selecionada.', kind: 'system' });
+    return;
+  }
+  state.chatComposer.uploading = true;
+  setChatMediaStatus('Fazendo upload…');
+  try {
+    const isImage = typeof file.type === 'string' && file.type.startsWith('image/');
+    const extension = file.name.includes('.') ? file.name.split('.').pop() : isImage ? 'jpg' : 'bin';
+    const url = await uploadBlobToStorage(session.sessionId, file, {
+      extension,
+      contentType: file.type || 'application/octet-stream',
+      prefix: isImage ? 'image' : 'file',
+    });
+    if (isImage) {
+      sendChatPayload({ type: 'image', imageUrl: url, text: file.name || 'Imagem' });
+    } else {
+      sendChatPayload({
+        type: 'file',
+        fileUrl: url,
+        text: file.name || 'Arquivo',
+        fileName: file.name || 'arquivo',
+        mimeType: file.type || 'application/octet-stream',
+        fileSize: file.size,
+      });
+    }
+  } catch (error) {
+    console.error('Falha no upload de anexo', error);
+    addChatMessage({ author: 'Sistema', text: 'Falha ao enviar anexo.', kind: 'system' });
+  } finally {
+    state.chatComposer.uploading = false;
+    setUploadProgress(null);
+  }
+};
+
+const stopChatAudioCapture = () => {
+  if (state.chatComposer.timerId) {
+    clearInterval(state.chatComposer.timerId);
+    state.chatComposer.timerId = null;
+  }
+  if (state.chatComposer.stream) {
+    state.chatComposer.stream.getTracks().forEach((track) => track.stop());
+  }
+  state.chatComposer.stream = null;
+  state.chatComposer.recorder = null;
+  state.chatComposer.recording = false;
+  state.chatComposer.chunks = [];
+  state.chatComposer.startedAt = 0;
+  if (dom.chatAudioBtn) dom.chatAudioBtn.classList.remove('recording');
+};
+
+const toggleAudioRecording = async () => {
+  if (state.chatComposer.recording && state.chatComposer.recorder) {
+    state.chatComposer.recorder.stop();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    addChatMessage({ author: 'Sistema', text: 'Gravação de áudio não suportada neste navegador.', kind: 'system' });
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    state.chatComposer.stream = stream;
+    state.chatComposer.recorder = recorder;
+    state.chatComposer.chunks = [];
+    state.chatComposer.startedAt = Date.now();
+    state.chatComposer.recording = true;
+    if (dom.chatAudioBtn) dom.chatAudioBtn.classList.add('recording');
+    setChatMediaStatus('Gravando… 00:00');
+    state.chatComposer.timerId = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - state.chatComposer.startedAt) / 1000);
+      const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+      const ss = String(elapsedSec % 60).padStart(2, '0');
+      setChatMediaStatus(`Gravando… ${mm}:${ss}`);
+    }, 500);
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) state.chatComposer.chunks.push(event.data);
+    };
+    recorder.onstop = async () => {
+      const blob = new Blob(state.chatComposer.chunks, { type: recorder.mimeType || 'audio/webm' });
+      stopChatAudioCapture();
+      const session = getSelectedSession();
+      if (!session) return;
+      state.chatComposer.uploading = true;
+      setChatMediaStatus('Enviando áudio…');
+      try {
+        const url = await uploadBlobToStorage(session.sessionId, blob, {
+          extension: 'webm',
+          contentType: blob.type || 'audio/webm',
+          prefix: 'audio',
+        });
+        sendChatPayload({ type: 'audio', audioUrl: url, text: 'Áudio' });
+      } catch (error) {
+        console.error('Falha no envio de áudio', error);
+        addChatMessage({ author: 'Sistema', text: 'Falha ao enviar áudio.', kind: 'system' });
+      } finally {
+        state.chatComposer.uploading = false;
+        setUploadProgress(null);
+      }
+    };
+    recorder.start();
+  } catch (error) {
+    console.error('Falha ao iniciar gravação', error);
+    addChatMessage({ author: 'Sistema', text: 'Não foi possível iniciar a gravação.', kind: 'system' });
+  }
 };
 
 const sendSessionCommand = (type, extra = {}, { silent = false, sessionId: overrideSessionId = null } = {}) => {
@@ -4596,6 +4842,9 @@ const addChatMessage = ({
   audioUrl = '',
   imageUrl = '',
   fileUrl = '',
+  fileName = '',
+  mimeType = '',
+  fileSize = null,
   kind = 'client',
   ts = Date.now(),
 }) => {
@@ -4604,7 +4853,7 @@ const addChatMessage = ({
     if (!dom.chatThread) return;
     const container = dom.chatThread;
     const shouldStick = isNearBottom(container);
-    const entry = createChatEntryElement({ author, text, type, audioUrl, imageUrl, fileUrl, kind, ts });
+    const entry = createChatEntryElement({ author, text, type, audioUrl, imageUrl, fileUrl, fileName, mimeType, fileSize, kind, ts });
     container.appendChild(entry);
     while (container.children.length > CHAT_RENDER_LIMIT) {
       container.removeChild(container.firstChild);
@@ -4821,6 +5070,24 @@ const initChat = () => {
       const text = dom.chatInput.value.trim();
       if (!text) return;
       sendChatMessage(text);
+    });
+  }
+  if (dom.chatAudioBtn) {
+    dom.chatAudioBtn.addEventListener('click', () => {
+      void toggleAudioRecording();
+    });
+  }
+  if (dom.chatAttachBtn && dom.chatFileInput) {
+    dom.chatAttachBtn.addEventListener('click', () => {
+      if (state.chatComposer.uploading) return;
+      dom.chatFileInput.click();
+    });
+    dom.chatFileInput.addEventListener('change', () => {
+      const [file] = dom.chatFileInput.files || [];
+      if (file) {
+        void sendAttachmentMessage(file);
+      }
+      dom.chatFileInput.value = '';
     });
   }
   dom.quickReplies.forEach((button) => {

@@ -1654,8 +1654,15 @@ const normalizeSessionDoc = (doc) => {
 const normalizeMessageDoc = (doc) => {
   if (!doc) return null;
   const data = typeof doc.data === 'function' ? doc.data() : {};
-  const text = data.text || data.body || data.message || '';
-  if (typeof text !== 'string' || !text.trim()) return null;
+  const typeRaw = data.type || (data.audioUrl ? 'audio' : data.imageUrl ? 'image' : data.fileUrl ? 'file' : 'text');
+  const type = typeof typeRaw === 'string' ? typeRaw.trim().toLowerCase() : 'text';
+  const textRaw = data.text || data.body || data.message || '';
+  const text = typeof textRaw === 'string' ? textRaw.trim() : '';
+  const audioUrl = typeof data.audioUrl === 'string' ? data.audioUrl.trim() : '';
+  const imageUrl = typeof data.imageUrl === 'string' ? data.imageUrl.trim() : '';
+  const fileUrl = typeof data.fileUrl === 'string' ? data.fileUrl.trim() : '';
+  const hasRenderableContent = Boolean(text || audioUrl || imageUrl || fileUrl);
+  if (!hasRenderableContent) return null;
   const ts =
     toMillis(data.ts) ||
     toMillis(data.timestamp) ||
@@ -1667,7 +1674,40 @@ const normalizeMessageDoc = (doc) => {
   return {
     id: data.id || doc.id,
     from,
-    text: text.trim(),
+    type,
+    text,
+    audioUrl,
+    imageUrl,
+    fileUrl,
+    status: typeof data.status === 'string' ? data.status : '',
+    ts,
+  };
+};
+
+const normalizeChatMessage = (message, { defaultFrom = 'client' } = {}) => {
+  if (!message) return null;
+  const ts = typeof message.ts === 'number' ? message.ts : Date.now();
+  const id = message.id || `${message.sessionId || 'session'}-${ts}`;
+  const from = message.from || defaultFrom;
+  const typeRaw =
+    message.type || (message.audioUrl ? 'audio' : message.imageUrl ? 'image' : message.fileUrl ? 'file' : 'text');
+  const type = typeof typeRaw === 'string' ? typeRaw.trim().toLowerCase() : 'text';
+  const textRaw = message.text || message.body || message.message || '';
+  const text = typeof textRaw === 'string' ? textRaw.trim() : '';
+  const audioUrl = typeof message.audioUrl === 'string' ? message.audioUrl.trim() : '';
+  const imageUrl = typeof message.imageUrl === 'string' ? message.imageUrl.trim() : '';
+  const fileUrl = typeof message.fileUrl === 'string' ? message.fileUrl.trim() : '';
+  if (!text && !audioUrl && !imageUrl && !fileUrl) return null;
+  return {
+    ...message,
+    id,
+    from,
+    type,
+    text,
+    audioUrl,
+    imageUrl,
+    fileUrl,
+    status: typeof message.status === 'string' ? message.status : '',
     ts,
   };
 };
@@ -1900,12 +1940,8 @@ const syncSessionStores = (session) => {
       : [];
   if (chatLog.length) {
     const normalized = chatLog
-      .map((entry) => ({
-        id: entry.id || `${sessionId}-${entry.ts || Date.now()}`,
-        from: entry.from || 'client',
-        text: entry.text || '',
-        ts: entry.ts || Date.now(),
-      }))
+      .map((entry) => normalizeChatMessage({ ...entry, sessionId }, { defaultFrom: 'client' }))
+      .filter(Boolean)
       .sort((a, b) => a.ts - b.ts);
     state.chatBySession.set(sessionId, normalized);
   } else {
@@ -1933,12 +1969,8 @@ const pushChatToStore = (sessionId, message) => {
 
 const ingestChatMessage = (message, { isSelf = false } = {}) => {
   if (!message || !message.sessionId) return;
-  const normalized = {
-    id: message.id || `${message.sessionId}-${message.ts || Date.now()}`,
-    from: message.from || (isSelf ? 'tech' : 'client'),
-    text: message.text || '',
-    ts: message.ts || Date.now(),
-  };
+  const normalized = normalizeChatMessage(message, { defaultFrom: isSelf ? 'tech' : 'client' });
+  if (!normalized) return;
   pushChatToStore(message.sessionId, normalized);
   const sessionIndex = state.sessions.findIndex((s) => s.sessionId === message.sessionId);
   if (sessionIndex >= 0) {
@@ -1956,6 +1988,10 @@ const ingestChatMessage = (message, { isSelf = false } = {}) => {
     addChatMessage({
       author: isTech ? (getTechDataset().techName || 'Você') : session?.clientName || normalized.from,
       text: normalized.text,
+      type: normalized.type,
+      audioUrl: normalized.audioUrl,
+      imageUrl: normalized.imageUrl,
+      fileUrl: normalized.fileUrl,
       kind: isTech ? 'self' : 'client',
       ts: normalized.ts,
     });
@@ -3185,12 +3221,57 @@ const stopLocalCall = async (notifyRemote = false) => {
   if (dom.controlQuality) dom.controlQuality.textContent = 'Iniciar chamada';
 };
 
-const createChatEntryElement = ({ author, text, kind = 'client', ts = Date.now() }) => {
+const createChatEntryElement = ({
+  author,
+  text,
+  type = 'text',
+  audioUrl = '',
+  imageUrl = '',
+  fileUrl = '',
+  kind = 'client',
+  ts = Date.now(),
+}) => {
   const entry = document.createElement('div');
   entry.className = 'message';
   if (kind === 'self') entry.classList.add('self');
   if (kind === 'system') entry.classList.add('system');
-  entry.textContent = `${formatTime(ts)} • ${author}: ${text}`;
+
+  const header = document.createElement('div');
+  header.className = 'message-header';
+  header.textContent = `${formatTime(ts)} • ${author}`;
+  entry.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'message-body';
+  if (type === 'audio' && audioUrl) {
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.src = audioUrl;
+    body.appendChild(audio);
+  } else if (type === 'image' && imageUrl) {
+    const image = document.createElement('img');
+    image.src = imageUrl;
+    image.alt = 'Imagem enviada no chat';
+    image.loading = 'lazy';
+    image.className = 'message-image';
+    body.appendChild(image);
+  } else if (type === 'file' && fileUrl) {
+    const link = document.createElement('a');
+    link.href = fileUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = text || 'Abrir anexo';
+    body.appendChild(link);
+  }
+
+  if (text && (type === 'text' || type === 'audio' || type === 'image' || type === 'file')) {
+    const textNode = document.createElement('div');
+    textNode.className = 'message-text';
+    textNode.textContent = text;
+    body.appendChild(textNode);
+  }
+
+  entry.appendChild(body);
   return entry;
 };
 
@@ -3241,6 +3322,10 @@ const renderChatForSession = () => {
           createChatEntryElement({
             author: isTech ? techName : session.clientName || msg.from,
             text: msg.text,
+            type: msg.type,
+            audioUrl: msg.audioUrl,
+            imageUrl: msg.imageUrl,
+            fileUrl: msg.fileUrl,
             kind: isTech ? 'self' : 'client',
             ts: msg.ts,
           })
@@ -4352,13 +4437,22 @@ const renderMetrics = () => {
   });
 };
 
-const addChatMessage = ({ author, text, kind = 'client', ts = Date.now() }) => {
-  if (!text) return;
+const addChatMessage = ({
+  author,
+  text,
+  type = 'text',
+  audioUrl = '',
+  imageUrl = '',
+  fileUrl = '',
+  kind = 'client',
+  ts = Date.now(),
+}) => {
+  if (!text && !audioUrl && !imageUrl && !fileUrl) return;
   scheduleRender(() => {
     if (!dom.chatThread) return;
     const container = dom.chatThread;
     const shouldStick = isNearBottom(container);
-    const entry = createChatEntryElement({ author, text, kind, ts });
+    const entry = createChatEntryElement({ author, text, type, audioUrl, imageUrl, fileUrl, kind, ts });
     container.appendChild(entry);
     while (container.children.length > CHAT_RENDER_LIMIT) {
       container.removeChild(container.firstChild);

@@ -1155,6 +1155,8 @@ body {
 }
 
 .image-lightbox-actions {
+  position: relative;
+  z-index: 3;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -1174,6 +1176,8 @@ body {
 }
 
 .image-lightbox-content {
+  position: relative;
+  z-index: 1;
   display: grid;
   place-items: center;
   min-height: 40vh;

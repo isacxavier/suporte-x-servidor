@@ -476,7 +476,13 @@ io.on('connection', (socket) => {
     const sessionId = normalizeSessionId(msg.sessionId);
     const text = ensureString(msg.text || '', '').trim();
     const from = ensureString(msg.from || '', '');
-    if (!sessionId || !text) {
+    const typeRaw = ensureString(msg.type || '', '').trim().toLowerCase();
+    const type = typeRaw || (msg.audioUrl ? 'audio' : msg.imageUrl ? 'image' : msg.fileUrl ? 'file' : 'text');
+    const audioUrl = ensureString(msg.audioUrl || '', '').trim();
+    const imageUrl = ensureString(msg.imageUrl || '', '').trim();
+    const fileUrl = ensureString(msg.fileUrl || '', '').trim();
+    const hasRenderableContent = Boolean(text || audioUrl || imageUrl || fileUrl);
+    if (!sessionId || !hasRenderableContent) {
       return respondAck(ack, { ok: false, err: 'bad-payload' });
     }
 
@@ -493,7 +499,12 @@ io.on('connection', (socket) => {
       id: messageId,
       sessionId,
       from: from || 'unknown',
+      type,
       text,
+      audioUrl,
+      imageUrl,
+      fileUrl,
+      status: ensureString(msg.status || '', '').trim() || 'sent',
       ts,
     };
 

@@ -941,6 +941,31 @@ body {
   flex: 0 0 auto;
 }
 
+.message-header {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.message-body {
+  display: grid;
+  gap: 8px;
+}
+
+.message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-image {
+  max-width: 100%;
+  border-radius: 10px;
+}
+
+.message audio {
+  width: 100%;
+}
+
 .message.self {
   background: rgba(56, 189, 248, 0.18);
   justify-self: end;

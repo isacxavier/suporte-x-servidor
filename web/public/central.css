@@ -960,6 +960,7 @@ body {
 .message-image {
   max-width: 100%;
   border-radius: 10px;
+  cursor: zoom-in;
 }
 
 .message audio {
@@ -1123,6 +1124,67 @@ body {
 .session-panel .session-metrics .indicator span {
   font-size: 12px;
   opacity: 0.85;
+}
+
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+}
+
+.image-lightbox[hidden] {
+  display: none;
+}
+
+.image-lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.84);
+}
+
+.image-lightbox-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(96vw, 1400px);
+  max-height: 96vh;
+  display: grid;
+  gap: 12px;
+}
+
+.image-lightbox-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.image-lightbox-actions button,
+.image-lightbox-actions a {
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(15, 23, 42, 0.65);
+  color: #f8fafc;
+  padding: 8px 12px;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.image-lightbox-content {
+  display: grid;
+  place-items: center;
+  min-height: 40vh;
+}
+
+.image-lightbox-content img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 0.12s ease-out;
 }
 
 .call-modal {
